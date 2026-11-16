@@ -1,0 +1,11 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><title>다정 · 블로그에 옮기기</title>
+<link rel="stylesheet" href="popup.css"><script src="popup.js" defer></script>
+<body><div class="mark">d.</div><h1>내 이야기를 블로그로</h1><p>앱에서 만든 글을<br>네이버에 예쁘게 옮겨드려요.</p>
+<label for="code">앱에서 복사한 전달 코드</label><input id="code" autocomplete="off" spellcheck="false"><button id="connect">앱과 연결하기</button><button id="fill">준비한 글 가져오기</button>
+<button id="formatOnly">서식만 다시 적용 · 글·사진 유지</button><p id="status" role="status" aria-live="polite">처음이라면 ‘앱과 연결하기’를 한 번 눌러 주세요.</p>
+<div id="fallback" hidden><p>글을 옮기다 멈췄다면 아래에서 복사해 직접 붙여 넣을 수 있어요.</p><button id="copyTitle">제목 복사</button><button id="copyBody">본문 복사</button><p id="photoHint"></p></div>
+<p id="detail"></p><button id="copyDiagnostic">입력·서식 진단 복사</button><details open><summary>앱 주소·직접 복사</summary><p>먼저 네이버에 로그인해 주세요. 이미 쓴 글이 있는 화면에는 덮어쓰지 않아요.</p>
+
+<label for="base">앱 주소</label><input id="base" value="http://127.0.0.1:8787" spellcheck="false">
+</details>
+<p class="small">마지막 발행은 네이버에서 직접 눌러 주세요.</p></body></html>

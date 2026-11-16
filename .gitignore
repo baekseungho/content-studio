@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+data/
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+tools/*.exe
+tools/*.zip
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,5 @@
+나눔바른히피 / NAVER Clova Nanum Handwriting
+Original unmodified WOFF2: https://editor-static.pstatic.net/c/resources/common/fonts/se-nanumbareunhipi-regular.woff2
+License: https://help.naver.com/service/30016/contents/18088?lang=ko&osType=PC
+Family license: https://hangeul.naver.com/font
+Downloaded 2026-11-16. OFL.txt contains the official license text.
