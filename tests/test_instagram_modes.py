@@ -31,3 +31,16 @@ class InstagramLoginModes(unittest.TestCase):
             self.assertEqual(app.instagram_login_type(),"unified")
         with patch.dict(os.environ,{"INSTAGRAM_LOGIN_TYPE":"auto","INSTAGRAM_ACCESS_TOKEN":"IGAA-test"}):
             self.assertEqual(app.instagram_login_type(),"instagram")
+
+    def test_opaque_token_requires_explicit_mode_instead_of_wrong_host(self):
+        with patch.dict(os.environ,{"INSTAGRAM_LOGIN_TYPE":"auto","INSTAGRAM_ACCESS_TOKEN":"opaque-token","INSTAGRAM_ACCOUNT_ID":"123","PUBLIC_MEDIA_BASE_URL":"https://photos.example.com"}),patch.object(app,"remote") as remote:
+            self.assertEqual(app.instagram_login_type(),"unknown")
+            self.assertIn("INSTAGRAM_LOGIN_TYPE",app.instagram_configuration()["invalid"])
+            with self.assertRaisesRegex(app.Problem,"자동으로 구분하지 못했어요"):app.graph("me?fields=id")
+            remote.assert_not_called()
+
+    def test_explicit_unified_accepts_opaque_tokens_and_keeps_threads_separate(self):
+        with patch.dict(os.environ,{"INSTAGRAM_LOGIN_TYPE":"unified","INSTAGRAM_ACCESS_TOKEN":"opaque-token","THREADS_ACCESS_TOKEN":"different-threads-token"}),patch.object(app,"remote",return_value={"id":"123"}) as remote:
+            app.graph("123?fields=id")
+        self.assertTrue(remote.call_args.args[0].startswith("https://graph.facebook.com/"))
+        self.assertEqual(remote.call_args.args[2],"opaque-token")

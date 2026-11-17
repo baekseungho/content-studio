@@ -447,17 +447,21 @@ def blog_html(draft):
 def instagram_login_type():
     configured=os.environ.get("INSTAGRAM_LOGIN_TYPE","auto").strip().lower()
     if configured=="auto":
-        # 접두어는 자동 라우팅에만 참고한다. 유효성은 실제 API로 검증한다.
-        return "unified" if os.environ.get("INSTAGRAM_ACCESS_TOKEN","").startswith("EAA") else "instagram"
+        # Known prefixes are only hints. Opaque tokens can also be valid Unified
+        # Login tokens; never assume that everything except EAA is Instagram Login.
+        token=os.environ.get("INSTAGRAM_ACCESS_TOKEN","").strip()
+        if token.startswith("EAA"):return "unified"
+        if token.startswith("IG"):return "instagram"
+        return "unknown"
     return configured
 
 def graph(path,payload=None):
-    token=os.environ.get("INSTAGRAM_ACCESS_TOKEN","")
+    token=os.environ.get("INSTAGRAM_ACCESS_TOKEN","").strip()
     if not token:
         raise Problem("인스타그램 액세스 토큰을 설정해 주세요.",409)
     mode=instagram_login_type()
     if mode not in ("instagram","unified"):
-        raise Problem("INSTAGRAM_LOGIN_TYPE은 unified, instagram, auto 중 하나로 설정해 주세요.",409)
+        raise Problem("토큰의 로그인 방식을 자동으로 구분하지 못했어요. 통합·Facebook 로그인에서 발급했다면 .env의 INSTAGRAM_LOGIN_TYPE=unified, Instagram Login에서 발급했다면 instagram으로 지정해 주세요. 토큰이 잘못됐다는 뜻은 아니에요.",409)
     host="graph.facebook.com" if mode=="unified" else "graph.instagram.com"
     return remote("https://"+host+"/"+os.environ.get("INSTAGRAM_API_VERSION","v27.0")+"/"+path,payload,token,60)
 

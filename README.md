@@ -60,7 +60,7 @@ requirements.txt는 허용 버전 범위를 기록합니다. 가상환경은 컴
 ## 인스타그램 사진 연결
 
 Business 또는 Creator 계정과 Meta 앱의 발행 권한이 필요합니다.
-통합 로그인(SUAT)은 unified, Instagram Login은 instagram 방식으로 처리합니다.
+통합 로그인(SUAT)·Facebook Login은 unified, Instagram Login은 instagram 방식으로 처리합니다. auto는 알려진 접두어만 참고하며, 접두어를 알 수 없는 유효한 통합 로그인 토큰도 있으므로 자동 구분이 안 되면 발급 방식에 맞춰 명시하세요. 토큰 형식만으로 유효·만료 여부를 판단하지 않습니다.
 앱의 연결 설정에서 실제 토큰·계정 연결을 확인합니다.
 
 고정 사진 서버가 없다면 Windows 64-bit용 cloudflared를 [Cloudflare 공식 다운로드](https://developers.cloudflare.com/tunnel/downloads/)에서 받아 tools/cloudflared.exe로 저장합니다.

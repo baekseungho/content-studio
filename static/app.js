@@ -590,8 +590,8 @@ function openSettings(channel){
    para(box,(present&&!invalid?"✓ ":"○ ")+label+": "+(invalid?"형식 확인 필요":present?"설정됨":"입력 필요")+" ("+key+")");
   }
   if(details.invalid.includes("INSTAGRAM_ACCOUNT_ID"))para(box,"계정 ID는 @사용자 이름이나 URL이 아닌 숫자 Instagram professional account ID를 넣어 주세요.");
-  para(box,"연결 방식: "+(details.login_type==="unified"?"Instagram API 통합 로그인":"Instagram Login"));
-  if(details.invalid.includes("INSTAGRAM_LOGIN_TYPE"))para(box,"INSTAGRAM_LOGIN_TYPE을 unified 또는 instagram으로 설정해 주세요.");
+  para(box,"연결 방식: "+(details.login_type==="unified"?"Instagram API 통합 로그인":details.login_type==="instagram"?"Instagram Login":"방식 선택 필요"));
+  if(details.invalid.includes("INSTAGRAM_LOGIN_TYPE"))para(box,"토큰의 로그인 방식을 자동으로 구분하지 못했어요. 통합·Facebook 로그인에서 발급했다면 INSTAGRAM_LOGIN_TYPE=unified, Instagram Login에서 발급했다면 instagram으로 설정해 주세요. 토큰이 잘못됐다는 뜻은 아니에요.");
   if(details.missing.length===1&&details.missing[0]==="PUBLIC_MEDIA_BASE_URL"){
    para(box,"사진을 전달할 공개 HTTPS 주소가 비어 있어요. 위에서 계정 ID와 토큰 형식도 함께 확인해 주세요. 현재는 인스타그램 발행 요청을 보내지 않았어요.");
   }
