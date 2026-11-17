@@ -24,9 +24,9 @@ FONT_TOOLBAR="""<button class="se-font-family-toolbar-button" data-name="font-fa
 <div id="alignment" hidden><button class="se-toolbar-option-align-center-button" data-name="align-drop-down-with-justify" data-value="center" onclick="document.querySelector('#align-style').textContent='.se-section-text{text-align:center}';this.parentElement.hidden=true">가운데 정렬 선택</button></div>
 <style id="font-style"></style><style id="size-style"></style><style id="align-style"></style>"""
 with tempfile.TemporaryDirectory(prefix="easy-extension-") as temp:
- env={**os.environ,"PORT":"8877","STUDIO_DATA_DIR":str(Path(temp)/"data"),"OPENAI_API_KEY":"","NAVER_BLOG_ID":"test_fixture"}
+ env={**os.environ,"PORT":"8878","STUDIO_DATA_DIR":str(Path(temp)/"data"),"OPENAI_API_KEY":"","NAVER_BLOG_ID":"test_fixture"}
  process=subprocess.Popen([sys.executable,str(ROOT/"app.py")],cwd=ROOT,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
- base="http://127.0.0.1:8877"
+ base="http://127.0.0.1:8878"
  try:
   for _ in range(60):
    try:
@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix="easy-extension-") as temp:
     worker.evaluate("async()=>{const [tab]=await chrome.tabs.query({active:true});await chrome.storage.session.set({fixtureReady:tab.id});}")
     expect(page.locator("#publish")).to_be_enabled(timeout=60000)
     saved_diagnostic=json.loads((Path(temp)/"data"/"naver-extension-diagnostics.json").read_text(encoding="utf-8"))
-    assert saved_diagnostic["version"]=="1.4.1" and saved_diagnostic["formatting"]["verified"]
+    assert saved_diagnostic["version"]=="1.5.3" and saved_diagnostic["formatting"]["verified"]
     assert "report_token" not in saved_diagnostic
     print("First input and local diagnostic recording verified",flush=True)
     expect(page.locator("#jobProgress")).to_contain_text("적용을 확인했어요",timeout=1000)
@@ -142,6 +142,26 @@ with tempfile.TemporaryDirectory(prefix="easy-extension-") as temp:
     expect(manual.locator("img.se-image-resource")).to_have_count(1)
     assert manual.locator(".se-text-paragraph").last.evaluate("el=>getComputedStyle(el).textAlign")=="center"
     page.locator("#closeModal").click()
+    from test_tistory import FIXTURE as TISTORY_FIXTURE
+    context.route("https://my-blog.tistory.com/**",lambda route:route.fulfill(status=200,content_type="text/html; charset=utf-8",body=TISTORY_FIXTURE))
+    context.route("https://media.test/**",lambda route:route.fulfill(content_type="image/png",body=image.getvalue()))
+    page.locator("#tistoryTab").click()
+    page.locator("#tistorySettings details").evaluate("el=>el.open=true")
+    page.locator("#tistoryUrl").fill("https://my-blog.tistory.com")
+    with context.expect_page() as opened_tistory:
+     page.locator("#publish").click()
+    tistory=opened_tistory.value
+    tistory.goto("https://my-blog.tistory.com/manage/newpost/")
+    worker.evaluate("async()=>{const tabs=await chrome.tabs.query({url:'https://my-blog.tistory.com/*'});await chrome.storage.session.set({fixtureReady:tabs[0].id});}")
+    expect(page.locator("#publish")).to_be_enabled(timeout=60000)
+    expect(page.locator("#naverDiagnostic")).to_contain_text("티스토리로 잘 옮겼어요")
+    page.locator("#tistoryUrl").fill("")
+    page.locator("#detectTistory").click()
+    expect(page.locator("#tistoryUrl")).to_have_value("https://my-blog.tistory.com")
+    expect(page.locator("#tistoryDetected")).to_have_text("https://my-blog.tistory.com")
+    expect(tistory.locator("#content img")).to_have_count(1)
+    expect(tistory.locator("#post-title-inp")).not_to_have_value("")
+    print("Tistory flow passed: app tab, isolated handoff, extension, text/photo insertion and diagnostic.",flush=True)
     qa=ROOT/"data"/"qa";qa.mkdir(exist_ok=True)
     naver.screenshot(path=str(qa/"native-format-fixture.png"),full_page=True)
     page.screenshot(path=str(qa/"easy-app.png"),full_page=True)

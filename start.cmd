@@ -1,8 +1,8 @@
 @echo off
 cd /d "%~dp0"
 if exist ".venv\Scripts\python.exe" (
-  ".venv\Scripts\python.exe" app.py
+  "%~dp0.venv\Scripts\python.exe" "%~dp0app.py"
 ) else (
-  python app.py
+  python "%~dp0app.py"
 )
 pause

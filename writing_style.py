@@ -70,7 +70,28 @@ def polish_blog(draft,request,model,key,remote):
 사진 위치 표시 [[photo:1]] 등은 모두 정확히 한 번씩 업로드 순서대로 유지한다.
 다른 블로그 문장을 복사하지 않는다. URL과 출처 문법은 넣지 않는다.
 JSON 객체 {"title":"...","blog":"..."} 하나만 반환한다. 제목은 장소명과 실제 포인트를 담아 자연스럽게 쓴다."""
-    context={"memo":request.get("prompt",""),"confirmed_facts":request.get("facts",""),"tone":request.get("tone",""),"writing_sample":request.get("style",""),"photo_notes":photo_notes(request.get("prompt",""),count),"photo_count":count,"draft":{"title":draft["title"],"blog":draft["blog"]}}
+    from channel_writing import language_guidance,threads_tone_guidance
+    instructions+="\n함께 받은 instagram·threads도 각 채널의 목소리에 맞게 다듬어 같은 JSON에 반환한다. instagram은 1900자 이내, threads는 450자 이내로 작성한다.\n영어에서는 facts_translation도 의미를 바꾸지 않고 더 자연스럽게 고칠 수 있다. 필수 메모의 각 문장을 Instagram에 자연스럽게 한 번씩 포함하고 같은 뜻을 반복하는 다른 문장은 지운다.\nThreads는 블로그 소제목이나 해시태그 없이 하나의 짧은 관찰로 시작한다. 제공하지 않은 경험을 추가하지 않는다.\nJSON 키: title, blog, instagram, threads, facts_translation."
+    instructions+="\n"+threads_tone_guidance(request.get("threads_tone","casual"),request.get("language","ko"))
+    instructions+="\n"+language_guidance(request.get("language","ko"))
+    if request.get("language")=="en":
+        instructions="""You are a thoughtful native-English editor for personal social posts. Rewrite from the confirmed notes, not from the awkward wording of the draft.
+The notes may be in Korean. Preserve their actual meaning, names, numbers and uncertainty. Add no invented companion, schedule, stress, sensation, return plan, or life lesson.
+Use everyday spoken English, contractions where natural, and specific observations. Avoid travel-copy language, forced metaphors, 'it was enough', 'nothing dramatic', or an essay about slowing down.
+Keep the amount of writing proportional to the notes: two simple facts usually need 2-4 sentences, not a long review. A short post is better than padded copy.
+Blog: a natural title and a few short paragraphs. Preserve every [[photo:n]] marker exactly once in uploaded order. Short ## headings are optional, never compulsory.
+Instagram: a short first line and a compact conversational paragraph, with 3-5 relevant hashtags only if useful. Do not repeat the same fact in the hook, body and ending.
+Threads: one clear observation, 1-3 short conversational sentences, no title or hashtag list, 450 characters or fewer. It should sound like someone posting a thought, not presenting a review.
+Render every confirmed-fact line faithfully in facts_translation. You may rephrase it naturally. Include each resulting sentence once, in context, in Instagram; remove overlapping sentences elsewhere.
+Honor the chosen tone and emoji preference. Keep the prose uncomplicated; don't sound like a brochure or a literal translation.
+Return only JSON with title, blog, instagram, threads, facts_translation. Title <=200 characters, Instagram <=1900, Threads <=450. No URLs or citation syntax in the prose."""
+        instructions+="\n"+language_guidance("en")+"\n"+threads_tone_guidance(request.get("threads_tone","casual"),"en")
+    from campaigns import CAMPAIGN_GUIDANCE,community_guidance,writing_context
+    instructions+="\n"+community_guidance(request)
+    if request.get("campaign_enabled"):instructions+="\n"+CAMPAIGN_GUIDANCE
+    from places import PLACE_GUIDANCE
+    instructions+="\n"+PLACE_GUIDANCE
+    context={"selected_place":request.get("selected_place"),"verified_place_facts":request.get("verified_place_facts",[]),**writing_context(request),"language":request.get("language","ko"),"memo":request.get("prompt",""),"confirmed_facts":request.get("facts",""),"tone":request.get("tone",""),"writing_sample":request.get("style",""),"photo_notes":photo_notes(request.get("prompt",""),count),"photo_count":count,"draft":{"title":draft["title"],"blog":draft["blog"],"instagram":draft.get("instagram",""),"threads":draft.get("threads",""),"facts_translation":draft.get("facts_translation","")}}
     payload={"model":model,"instructions":instructions,"input":[{"role":"user","content":[{"type":"input_text","text":json.dumps(context,ensure_ascii=False)}]}],"max_output_tokens":4000,"store":False}
     if model.startswith("gpt-5"):payload["reasoning"]={"effort":"low"}
     response=remote("https://api.openai.com/v1/responses",payload,key)
@@ -80,4 +101,9 @@ JSON 객체 {"title":"...","blog":"..."} 하나만 반환한다. 제목은 장�
     if len(result["title"])>200 or len(result["blog"])>30000:raise ValueError("다듬기 응답 길이가 맞지 않아요.")
     positions=[int(value) for value in re.findall(r"\[\[photo:(\d+)\]\]",result["blog"])]
     if positions!=list(range(1,count+1)):raise ValueError("다듬는 과정에서 사진 순서가 달라 원래 초안을 유지했어요.")
-    return {"title":result["title"],"blog":result["blog"]},response.get("usage",{})
+    refined={"title":result["title"],"blog":result["blog"]}
+    for name,limit in (("instagram",2200),("threads",500),("facts_translation",4000)):
+        if name in result:
+            if not isinstance(result[name],str) or len(result[name])>limit or (name!="facts_translation" and not result[name].strip()):raise ValueError("다듬기 응답의 "+name+" 길이·형식이 맞지 않아요.")
+            refined[name]=result[name]
+    return refined,response.get("usage",{})

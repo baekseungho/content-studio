@@ -55,6 +55,15 @@ class StudioTests(unittest.TestCase):
         self.assertIn("<h2>소제목</h2>",output)
         self.assertEqual(output.count("data:image/jpeg;base64,"),1)
 
+    def test_required_story_is_saved_in_caption_and_cannot_overflow_silently(self):
+        body={"title":"제목","blog":"본문","instagram":"온천 후기\n\n#부산","facts":"욕실용품은 바이레도였어요.","images":[self.mid]}
+        saved=app.save_draft(body)
+        self.assertIn(body["facts"],saved["instagram"])
+        self.assertEqual(app.save_draft(saved)["instagram"],saved["instagram"])
+        body["facts"]="중요한 이야기"*400
+        with self.assertRaisesRegex(app.Problem,"2,200"):
+            app.save_draft(body)
+
     def test_caption_limit(self):
         with self.assertRaises(app.Problem):
             app.save_draft({**self.draft,"instagram":"가"*2201})
@@ -165,6 +174,12 @@ class HttpTests(unittest.TestCase):
                 urllib.request.urlopen(self.base+path)
             self.assertEqual(e.exception.code,404)
             e.exception.close()
+
+    def test_threads_publish_requires_explicit_confirmation(self):
+        req=urllib.request.Request(self.base+"/api/publish/threads",data=json.dumps({"id":"a"*32}).encode(),headers={"Content-Type":"application/json","X-Studio-Token":app.TOKEN})
+        with patch.object(app,"start_job") as start:
+            with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(req)
+            self.assertEqual(error.exception.code,400);error.exception.close();start.assert_not_called()
 
     def test_http_save_load_and_token_injection(self):
         with urllib.request.urlopen(self.base) as response:

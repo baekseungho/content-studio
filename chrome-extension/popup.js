@@ -1,6 +1,7 @@
 "use strict";
 const $=id=>document.getElementById(id);
 async function refresh(){
+ const [current]=await chrome.tabs.query({active:true,currentWindow:true});$("formatOnly").hidden=Boolean(current?.url?.includes(".tistory.com/"));
  const result=await chrome.storage.session.get(["lastStatus","fallbackText","pending"]);
  const fallback=result.fallbackText;
  const working=Boolean(result.lastStatus?.busy&&Date.now()-(result.lastStatus.updated||0)<180000);
@@ -22,7 +23,7 @@ $("fill").addEventListener("click",async()=>{
   const code=$("code").value.trim();
   const {pending}=await chrome.storage.session.get("pending");
   if(!code&&(!pending||pending.expires<Date.now()))throw Error("앱에서 ‘블로그로 옮기기’를 먼저 눌러 주세요.");
-  const result=await chrome.runtime.sendMessage({type:"fill",tabId:tab.id,base:code?$("base").value:pending.base,code:code||pending.code});
+  const result=await chrome.runtime.sendMessage({type:"fill",channel:code?(tab.url?.includes(".tistory.com/")?"tistory":"naver"):pending?.channel,tabId:tab.id,base:code?$("base").value:pending.base,code:code||pending.code});
   if(result.codeConsumed)$("code").value="";
   $("status").textContent=result.message;
   await refresh();

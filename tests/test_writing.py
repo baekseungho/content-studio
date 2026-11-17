@@ -71,3 +71,28 @@ class MobileLineTests(unittest.TestCase):
         self.assertEqual(result["blog"],"보존할 본문")
         self.assertFalse(result["generation"]["style_pass"])
         self.assertTrue(any("사진 순서" in item["message"] for item in result["checks"]))
+
+
+class RequiredInstagramStoryTests(unittest.TestCase):
+    def test_missing_notes_before_hashtags_and_no_duplicate_on_save(self):
+        from writing_quality import required_instagram_story
+        caption="온천이 좋았어요 ♨️\n\n#부산 #여행"
+        facts="욕실용품은 바이레도였어요.\n창가 자리가 좋았어요."
+        result=required_instagram_story(caption,facts)
+        self.assertIn(facts,result)
+        self.assertTrue(result.endswith("#부산 #여행"))
+        self.assertEqual(required_instagram_story(result,facts),result)
+    def test_line_wrap_does_not_duplicate_a_note(self):
+        from writing_quality import required_instagram_story
+        caption="욕실용품은\n바이레도였어요."
+        self.assertEqual(required_instagram_story(caption,"욕실용품은 바이레도였어요."),caption)
+    def test_generation_restores_omitted_note(self):
+        import json
+        from unittest.mock import patch
+        import app
+        response={"output":[{"type":"message","content":[{"type":"output_text","text":json.dumps({"title":"제목","blog":"온천 이야기","instagram":"온천이 좋았어요\n\n#부산"})}]}]}
+        with patch.dict(os.environ,{"OPENAI_API_KEY":"test-key"}),patch.object(app,"remote",return_value=response):
+            events=[]
+            result=app.generate({"prompt":"온천 후기","facts":"욕실용품은 바이레도였어요.","images":[],"tone":"이모지 없이 깔끔하게"},lambda message,stage:events.append(stage))
+        self.assertEqual(events,[1,2,4])
+        self.assertIn("욕실용품은 바이레도였어요.",result["instagram"])

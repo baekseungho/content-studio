@@ -337,3 +337,25 @@ class ExtensionEditorTests(unittest.TestCase):
         self.assertIn("온천이 정말 좋았어요 ♨️",self.page.locator('.se-section-text').inner_text())
         self.assertTrue(result["diagnostics"]["formatAttempts"][0]["alignmentMenu"])
         self.assertTrue(result["diagnostics"]["formatAttempts"][0]["sizeOption"])
+
+    def test_proxy_font_needs_editor_model_keyboard_selection(self):
+        self.prepare_input_iframe()
+        self.page.locator(".se-section-text").evaluate("el=>el.innerHTML='<p class=se-text-paragraph style=\"text-align:center;font-size:15px;font-family:Arial\">첫 줄</p><p class=se-text-paragraph style=\"text-align:center;font-size:15px;font-family:Arial\">둘째 줄 🤍</p>'")
+        self.page.evaluate("""()=>{
+         const inner=document.querySelector('iframe').contentDocument;
+         inner.body.addEventListener('keydown',event=>{
+          if(event.ctrlKey&&event.key==='a'){event.preventDefault();window.modelSelected=true;}
+         });
+         const bar=document.createElement('div');
+         bar.innerHTML='<button class="se-font-family-toolbar-button" data-name="font-family">서체 변경</button><div id="font-list" hidden><button data-name="font-family" data-value="nanumbareunhipi"><span>바른히피</span><span>바른히피</span></button></div>';
+         document.body.prepend(bar);
+         bar.querySelector('.se-font-family-toolbar-button').onclick=()=>{document.querySelector('#font-list').hidden=false;};
+         bar.querySelector('[data-value]').onclick=()=>{
+          if(window.modelSelected)document.querySelectorAll('.se-section-text p').forEach(p=>p.style.fontFamily='se-nanumbareunhipi');
+          document.querySelector('#font-list').hidden=true;
+         };
+        }""")
+        result=self.page.evaluate("()=>editorAction('format',{format:{align:'center',font:'나눔바른히피',font_key:'nanumbareunhipi',size:15}})")
+        self.assertEqual(result["state"],"ready",result)
+        self.assertTrue(result["formatting"]["font"])
+        self.assertIn("둘째 줄 🤍",self.page.locator('.se-section-text').inner_text())

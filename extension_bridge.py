@@ -5,6 +5,8 @@ import secrets
 import threading
 import time
 from content_rules import clean_blog
+from platform_writing import view as platform_view
+from campaigns import mission_checks
 from writing_templates import template_for
 
 class HandoffError(Exception):
@@ -12,7 +14,8 @@ class HandoffError(Exception):
         self.message,self.status=message,status
 
 class ExtensionBridge:
-    def __init__(self,media,guard):
+    def __init__(self,media,guard,channel="naver"):
+        self.channel=channel
         self.media=media
         self.guard=guard
         self.lock=threading.RLock()
@@ -23,8 +26,11 @@ class ExtensionBridge:
         self.tickets={k:v for k,v in self.tickets.items() if v["expires"]>now}
         self.reports={k:v for k,v in self.reports.items() if v["expires"]>now}
     def create(self,draft,allow_repeat=False):
+        draft=platform_view(draft,self.channel)
         with self.lock:
             self.prune()
+            missing=[check["label"] for check in mission_checks(draft) if not check["passed"]]
+            if missing:raise HandoffError("체험단 미션을 먼저 확인해 주세요: "+", ".join(missing[:4]),409)
             if self.guard.status()["blocked"]:
                 raise HandoffError("네이버 보호 잠금 상태예요. 공식 네이버에서 직접 제한 해제와 정상 로그인을 확인해 주세요.",409)
             if draft["id"] in self.guard.read().get("completed",[]) and not allow_repeat:
@@ -80,7 +86,7 @@ class ExtensionBridge:
                 safe={key:diagnostic[key] for key in ("version","state","stage","message","formatting","diagnostics") if key in diagnostic}
                 encoded=json.dumps(safe,ensure_ascii=False,indent=2)
                 if len(encoded.encode("utf-8"))<=100000:
-                    destination=self.guard.path.parent/"naver-extension-diagnostics.json"
+                    destination=self.guard.path.parent/(self.channel+"-extension-diagnostics.json")
                     try:
                         temporary=destination.with_suffix(".tmp")
                         temporary.write_text(encoded,encoding="utf-8");temporary.replace(destination)

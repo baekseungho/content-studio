@@ -1,5 +1,5 @@
 "use strict";
-importScripts("editor.js");
+importScripts("editor.js","tistory.js");
 let busy=false,launching=false;
 const version=()=>chrome.runtime.getManifest().version;
 async function status(message,running=true,extra={}){
@@ -20,6 +20,7 @@ async function request(base,path,body){
  const result=await response.json();if(!response.ok)throw Error(result.error||"로컬 앱에 연결하지 못했어요.");return result;
 }
 async function runFill(message){
+ if(message.channel==="tistory")return runTistoryFill(message);
  if(busy)return {ok:false,version:version(),stage:"진행 중",message:"이미 입력 중이에요. 열린 네이버 탭을 확인해 주세요."};
  busy=true;const heartbeat=setInterval(()=>chrome.storage.session.get("lastStatus").catch(()=>{}),15000);let payload,base,reported=false,stage="전달 번호 확인",probes=[];
  try{
@@ -92,7 +93,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   if(message.type==="format")return formatOnly(message.tabId);
   const {pending}=await chrome.storage.session.get("pending");
   if(!message.code&&pending?.expires<Date.now())throw Error("전달 코드가 10분을 지나 만료됐어요. 앱에서 새 코드를 만들어 주세요.");
-  return runFill({...message,base:message.base||pending?.base,code:message.code||pending?.code});
+  return runFill({...message,channel:message.channel||pending?.channel,base:message.base||pending?.base,code:message.code||pending?.code});
  })().then(respond).catch(error=>respond({ok:false,version:version(),stage:"전달 준비",message:error.message,detail:error.message}));
  return true;
 });
@@ -101,7 +102,14 @@ chrome.runtime.onMessageExternal.addListener((message,sender,respond)=>{
  try{origin=localBase(new URL(sender.url).origin);}catch{return false;}
  (async()=>{
   const {pairedBase}=await chrome.storage.local.get("pairedBase");
-  if(!pairedBase||localBase(pairedBase)!==origin)return {ok:false,message:"먼저 다정 아이콘에서 ‘앱과 연결하기’를 눌러 주세요."};
+  if(!pairedBase||localBase(pairedBase)!==origin)return {ok:false,message:"먼저 Mellow 아이콘에서 ‘앱과 연결하기’를 눌러 주세요."};
+  if(message.type==="tistoryBlogs"){
+   const tabs=await chrome.tabs.query({url:"https://*.tistory.com/*"});
+   const blogs=[...new Set(tabs.flatMap(tab=>{
+    try{const url=new URL(tab.url);return /^[a-z0-9][a-z0-9-]*\.tistory\.com$/.test(url.hostname)&&!["www.tistory.com","notice.tistory.com"].includes(url.hostname)?[url.origin]:[];}catch{return [];}
+   }))];
+   return {ok:true,blogs};
+  }
   if(message.type==="ping")return {ok:true,version:version()};
   if(message.type==="status"){
    const result=await chrome.storage.session.get("lastStatus");return result.lastStatus||{message:"준비됐어요.",busy:false,version:version()};
@@ -110,6 +118,15 @@ chrome.runtime.onMessageExternal.addListener((message,sender,respond)=>{
   if(busy||launching)return {ok:false,message:"이미 글을 옮기고 있어요. 네이버 화면을 확인해 주세요."};
   if(localBase(message.base)!==origin||!/^[A-Za-z0-9_-]{32}$/.test(message.code))throw Error("로컬 앱 연결이나 전달 코드가 올바르지 않아요.");
   const writer=new URL(message.writer_url);
+  if(message.channel==="tistory"){
+   if(writer.protocol!=="https:"||!/^([a-z0-9][a-z0-9-]*\.)tistory\.com$/.test(writer.hostname)||writer.username||writer.password||writer.port||writer.pathname!=="/manage/newpost/"||writer.search||writer.hash)throw Error("티스토리 글쓰기 주소가 올바르지 않아요.");
+   launching=true;
+   try{
+    await chrome.storage.session.set({pending:{base:origin,code:message.code,channel:"tistory",expires:Date.now()+600000}});
+    const tab=await chrome.tabs.create({url:writer.href,active:true});
+    return await runTistoryFill({tabId:tab.id,base:origin,code:message.code,channel:"tistory"});
+   }finally{launching=false;}
+  }
   if(writer.origin!=="https://blog.naver.com"||!/^\/[A-Za-z0-9_-]+$/.test(writer.pathname)||writer.searchParams.get("Redirect")!=="Write")throw Error("네이버 글쓰기 주소가 올바르지 않아요.");
   launching=true;
   try{
@@ -120,3 +137,38 @@ chrome.runtime.onMessageExternal.addListener((message,sender,respond)=>{
  })().then(respond).catch(async error=>respond(await finish({ok:false,stage:"새 글쓰기 탭 열기",message:error.message,detail:error.message})));
  return true;
 });
+
+async function runTistoryFill(message){
+ if(busy)return {ok:false,message:"이미 글을 옮기는 중이에요."};
+ busy=true;let payload,base,stage="티스토리 편집기 찾기";
+ const heartbeat=setInterval(()=>chrome.storage.session.get("lastStatus").catch(()=>{}),15000);
+ try{
+  base=localBase(message.base);
+  if(!/^[A-Za-z0-9_-]{32}$/.test(message.code||""))throw Error("앱에서 새 전달 코드를 만들어 주세요.");
+  await chrome.storage.session.set({pending:{base,code:message.code,channel:"tistory",expires:Date.now()+600000}});
+  await status(stage,true,{stage});
+  let target,tab;
+  for(let i=0;i<60;i++){
+   tab=await chrome.tabs.get(message.tabId);const url=new URL(tab.url||"about:blank");
+   if(tab.status==="complete"){
+    if(!/^[a-z0-9][a-z0-9-]*\.tistory\.com$/.test(url.hostname)||url.protocol!=="https:"||!url.pathname.startsWith('/manage/newpost'))throw Error("티스토리에 직접 로그인한 뒤 빈 글쓰기 화면에서 확장을 눌러 준비한 글을 가져와 주세요.");
+    const results=await chrome.scripting.executeScript({target:{tabId:tab.id,allFrames:true},world:"MAIN",func:tistoryAction,args:["probe",null]});
+    if(results.some(item=>item.result?.blocked))throw Error("티스토리에서 추가 인증을 완료해 주세요.");
+    if(results.some(item=>item.result?.existing))throw Error("열린 편집기에 글이나 사진이 있어 덮어쓰지 않았어요. 빈 글을 열어 주세요.");
+    target=results.find(item=>item.result?.eligible);if(target)break;
+   }
+   await new Promise(r=>setTimeout(r,500));
+  }
+  if(!target)throw Error("티스토리 기본 편집기를 찾지 못했어요. 임시저장 안내를 닫고 기본 편집 모드인지 확인해 주세요.");
+  payload=await request(base,"/api/extension/redeem",{code:message.code,channel:"tistory"});
+  await chrome.storage.session.remove("pending");
+  stage="티스토리 글·사진 입력";await status(stage,true,{stage});
+  const output=await chrome.scripting.executeScript({target:{tabId:tab.id,frameIds:[target.frameId]},world:"MAIN",func:tistoryAction,args:["fill",payload]});
+  const result=output[0]?.result||{state:"failed",count:0,message:"입력 결과를 받지 못했어요."};
+  await request(base,"/api/extension/report",{channel:"tistory",token:payload.report_token,state:result.state,count:result.count,diagnostic:{version:version(),...result}});
+  return await finish({...result,codeConsumed:true,ok:result.state==="ready",contentReady:["ready","partial"].includes(result.state),detail:result.message});
+ }catch(error){
+  if(payload)try{await request(base,"/api/extension/report",{channel:"tistory",token:payload.report_token,state:"failed",count:0});}catch{}
+  return await finish({ok:false,codeConsumed:Boolean(payload),stage,state:"failed",message:error.message,detail:error.message});
+ }finally{clearInterval(heartbeat);busy=false;}
+}

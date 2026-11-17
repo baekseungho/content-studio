@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "다정 스튜디오 · 네이버 글쓰기 도우미",
-  "version": "1.4.1",
-  "description": "로그인된 네이버 글쓰기 탭에 사용자가 선택한 초안과 사진을 입력합니다. 최종 발행은 직접 진행합니다.",
+  "name": "Mellow Studio · 블로그 글쓰기 도우미",
+  "version": "1.5.3",
+  "description": "로그인된 네이버·티스토리 편집기에 글과 사진을 옮깁니다. 최종 발행은 직접 진행합니다.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -12,14 +12,19 @@
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
-    "https://blog.naver.com/*"
+    "https://blog.naver.com/*",
+    "https://*.tistory.com/*"
   ],
   "background": {
     "service_worker": "worker.js"
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "다정 스튜디오"
+    "default_title": "Mellow Studio",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
   },
   "minimum_chrome_version": "102",
   "externally_connectable": {
@@ -27,5 +32,11 @@
       "http://127.0.0.1/*",
       "http://localhost/*"
     ]
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
   }
 }

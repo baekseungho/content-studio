@@ -100,13 +100,14 @@ async function editorAction(mode,payload){
    const click=el=>{const view=el.ownerDocument.defaultView;el.dispatchEvent(new view.MouseEvent("mousedown",{bubbles:true,cancelable:true}));el.dispatchEvent(new view.MouseEvent("mouseup",{bubbles:true,cancelable:true}));el.click();};
    const attempt={fontMenu:false,fontOption:false,sizeMenu:false,sizeOption:false,alignmentMenu:false,alignmentOption:false};
    const menuChoice=async(openSelector,labels,kind)=>{
-    const opener=find(openSelector);attempt[kind+"Menu"]=Boolean(opener);if(!opener)return false;
+    const opener=find(openSelector,el=>!el.hasAttribute('data-value'));attempt[kind+"Menu"]=Boolean(opener);if(!opener)return false;
     click(opener);await pause(120);
     const normalized=labels.map(value=>value.replace(/\s/g,""));
     const options=relatedDocs().flatMap(doc=>[...doc.querySelectorAll('[role="option"],.se-toolbar-option,li,button')]).filter(el=>el!==opener&&visible(el)&&!el.disabled);
     if(formatAttempts.length<2)attempt[kind+"Choices"]=options.filter(el=>el.hasAttribute("data-value")||el.matches('[role="option"],.se-toolbar-option')).slice(0,35).map(el=>({class:String(el.className).slice(0,160),name:el.getAttribute("data-name"),value:el.getAttribute("data-value"),label:(el.textContent||"").trim().slice(0,60)}));
-    const option=options.find(el=>
-      [el.getAttribute("data-value"),el.textContent].some(value=>normalized.includes((value||"").replace(/\s/g,""))));
+    // Prefer the exact model value: Naver repeats the visible label for accessibility.
+    const option=options.find(el=>normalized.includes(el.getAttribute("data-value")))||options.find(el=>
+      !el.querySelector('button,[role="option"]')&&normalized.includes((el.textContent||"").replace(/\s/g,"")));
     if(option){click(option);await pause(100);attempt[kind+"Option"]=true;return true;}
     click(opener);return false;
    };
@@ -152,14 +153,23 @@ async function editorAction(mode,payload){
     }
     const active=inputDoc.activeElement;
     if(inputDoc!==document&&active?.isContentEditable){
-     const range=inputDoc.createRange();range.selectNodeContents(active);
-     const selection=inputDoc.getSelection();selection.removeAllRanges();selection.addRange(range);
+     // The hidden input's DOM Range is not the editor model's character selection.
+     // Let the editor handle Select All before applying character-level font/size.
+     const keys={key:"a",code:"KeyA",keyCode:65,which:65,ctrlKey:true,bubbles:true,cancelable:true};
+     const down=new inputDoc.defaultView.KeyboardEvent("keydown",keys);active.dispatchEvent(down);
+     active.dispatchEvent(new inputDoc.defaultView.KeyboardEvent("keyup",keys));
+     if(!down.defaultPrevented){
+      const range=inputDoc.createRange();range.selectNodeContents(active);
+      const selection=inputDoc.getSelection();selection.removeAllRanges();selection.addRange(range);
+     }
+     await pause(100);
     }else if(paragraph.isContentEditable){
      const range=document.createRange();range.selectNodeContents(paragraph);
      const selection=document.getSelection();selection.removeAllRanges();selection.addRange(range);
     }
     await pause(100);
     await applyFormat(inputDoc);
+    if(formatCheck().verified)break;
    }
   };
   if(mode==="format"){
