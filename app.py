@@ -21,11 +21,17 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from PIL import Image, ImageOps
+from platform_writing import migrate,view as platform_view,platform_languages
+from places import selected_place,search_places,research_place,PlaceError,PLACE_GUIDANCE
+from instance_lock import acquire_instance
 from media_tunnel import MediaTunnel
+from threads_publishing import ThreadsPublisher,SCHEMA as THREADS_SCHEMA
 from content_rules import clean_blog
+from campaigns import read_fields,writing_context,tags_from,apply_tags,mission_checks,CAMPAIGN_GUIDANCE,community_guidance
 from naver_guard import NaverGuard
-from writing_quality import disclose,review,DISCLOSURES
+from writing_quality import disclose,review,DISCLOSURES,required_instagram_story,caption_facts
 from tones import TONES
+from channel_writing import THREADS_GUIDANCE,language_guidance,threads_tone_guidance
 from photo_layout import photo_layout
 from writing_templates import TEMPLATES,template_for
 from writing_style import BLOG_GUIDANCE,mobile_lines,photo_notes,polish_blog,LIVELY_TONES
@@ -42,6 +48,7 @@ MEDIA.mkdir(parents=True, exist_ok=True)
 PHOTO_TUNNEL=MediaTunnel(ROOT,MEDIA)
 NAVER_GUARD=NaverGuard(DATA/'naver-guard.json')
 EXTENSION=ExtensionBridge(MEDIA,NAVER_GUARD)
+TISTORY_EXTENSION=ExtensionBridge(MEDIA,NaverGuard(DATA/"tistory-guard.json"),channel="tistory")
 PORT = int(os.environ.get("PORT", "8787"))
 TOKEN = secrets.token_urlsafe(32)
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
@@ -65,6 +72,9 @@ with db() as c:
     CREATE UNIQUE INDEX IF NOT EXISTS publish_guard ON attempts(draft_id)
       WHERE state IN ('publishing','published','uncertain');
     """)
+
+with db() as c:
+    c.executescript(THREADS_SCHEMA)
 
 class Problem(Exception):
     def __init__(self, message, status=400):
@@ -115,7 +125,7 @@ def get_draft(did):
         row = c.execute("SELECT data FROM drafts WHERE id=?", (did,)).fetchone()
     if not row:
         raise Problem("초안을 찾을 수 없어요.", 404)
-    return json.loads(row["data"])
+    return migrate(json.loads(row["data"]))
 
 def save_draft(body):
     did = body.get("id") or uuid.uuid4().hex
@@ -124,24 +134,65 @@ def save_draft(body):
     disclosure=body.get("disclosure","none")
     if disclosure not in DISCLOSURES:
         raise Problem("광고·제품 제공 표시를 확인해 주세요.")
+    language=body.get("language","ko")
+    if language not in ("ko","en"):raise Problem("작성 언어를 다시 선택해 주세요.")
+    threads_tone=body.get("threads_tone","casual")
+    if threads_tone not in ("casual","polite","witty"):raise Problem("Threads 말투를 다시 선택해 주세요.")
     template=body.get("template","reference")
     if not isinstance(template,str) or template not in TEMPLATES:
         raise Problem("글 꾸미기 양식을 다시 선택해 주세요.")
-    clean = {"id": did,"template":template, "title": text(body.get("title", ""), 200, "제목"),
-        "blog": clean_blog(text(body.get("blog", ""),30000,"블로그 본문")), "instagram": text(body.get("instagram", ""), 2200, "인스타그램 캡션"),
+    try:
+        extras=read_fields(body)
+        place=selected_place(body.get("selected_place"))
+        languages=platform_languages(body.get("platform_languages"),language)
+    except ValueError as error:raise Problem(str(error))
+    clean = {**extras,"selective_generation":body.get("selective_generation") is True,"platform_languages":languages,"tistory":text(body.get("tistory",body.get("blog", "") if not body.get("selective_generation") else ""),30000,"티스토리 본문"),"tistory_title":text(body.get("tistory_title",body.get("title", "") if not body.get("selective_generation") else ""),200,"티스토리 제목"),"selected_place":place,"research":body.get("research") is True,"id": did,"template":template,"language":language,"threads_tone":threads_tone,
+        "threads":text(body.get("threads",""),500,"Threads 글"),"threads_include_images":body.get("threads_include_images",True) is True,
+        "facts_translation":text(body.get("facts_translation",""),4000,"영어 필수 메모"),
+        "facts_translation_source":text(body.get("facts_translation_source",""),4000,"필수 메모 원문"), "title": text(body.get("title", ""), 200, "제목"),
+        "blog": text(body.get("blog", ""),30000,"블로그 본문"), "instagram": text(body.get("instagram", ""), 2200, "인스타그램 캡션"),
         "prompt": text(body.get("prompt", ""), 6000, "글 작성 요청"), "style": text(body.get("style", ""), 3000, "내 말투 예시"),
         "tone": text(body.get("tone", "밝고 자연스러운 일상 후기체"), 100, "글의 분위기"),
         "facts":text(body.get("facts", ""), 4000, "직접 경험한 사실"),"disclosure":disclosure,
         "images": image_ids(body.get("images", [])), "sources": [], "updated": time.time()}
-    clean["blog"]=photo_layout(disclose(clean["blog"],disclosure),len(clean["images"]))
-    clean["instagram"]=disclose(clean["instagram"],disclosure)
+    editing=body.get("editing_platform") if clean["selective_generation"] else None
+    if editing is not None and editing not in ("naver","tistory","instagram","threads"):raise Problem("작성 중인 플랫폼을 다시 선택해 주세요.")
+    for platform,field in (("naver","blog"),("tistory","tistory")):
+        if editing in (None,platform) and clean[field].strip():clean[field]=photo_layout(disclose(clean_blog(clean[field]),disclosure,languages.get(platform,language)),len(clean["images"]))
+    if editing in (None,"instagram") and clean["instagram"].strip():clean["instagram"]=disclose(required_instagram_story(clean["instagram"],caption_facts({**clean,"language":languages.get("instagram",language)})),disclosure,languages.get("instagram",language))
     if len(clean["instagram"])>2200:
-        raise Problem("광고 안내를 포함한 인스타그램 캡션이 2,200자를 넘어요. 본문을 줄여 주세요.")
+        raise Problem("꼭 넣고 싶은 이야기와 광고 안내를 포함하면 인스타그램 글이 2,200자를 넘어요. 이야기나 본문을 줄여 주세요.")
+    if editing in (None,"threads") and clean["threads"].strip():clean["threads"]=disclose(clean["threads"],disclosure,languages.get("threads",language))
+    if len(clean["threads"])>500:raise Problem("광고 안내를 포함하면 Threads 글이 500자를 넘어요. 내용을 줄여 주세요.")
+    old_tags=body.get("managed_blog_tags",[])
+    if not isinstance(old_tags,list):old_tags=[]
+    clean["managed_blog_tags"]=tags_from(clean["hashtags"])
+    if editing in (None,"naver") and clean["blog"].strip():clean["blog"]=apply_tags(clean["blog"],clean["managed_blog_tags"],old_tags)
+    old_tistory_tags=body.get("managed_tistory_tags",[])
+    if not isinstance(old_tistory_tags,list):old_tistory_tags=[]
+    clean["managed_tistory_tags"]=old_tistory_tags if editing not in (None,"tistory") else tags_from(clean["hashtags"])
+    if editing in (None,"tistory") and clean["tistory"].strip():clean["tistory"]=apply_tags(clean["tistory"],clean["managed_tistory_tags"],old_tistory_tags)
+    if editing not in (None,"naver"):clean["managed_blog_tags"]=old_tags
+    if any(len(clean[field])>30000 for field in ("blog","tistory")):raise Problem("태그를 포함하면 블로그 글이 너무 길어요. 본문을 줄여 주세요.")
+    clean["campaign_checks"]=mission_checks(clean)
     clean["sources"]=normalize_sources(body.get("sources",[]))
     with db() as c:
         c.execute("INSERT INTO drafts VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,data=excluded.data,updated=excluded.updated",
-                  (did, clean["title"], json.dumps(clean, ensure_ascii=False), clean["updated"]))
+                  (did, clean["title"] or clean["tistory_title"] or clean["prompt"][:40] or clean["instagram"].split("\n")[0][:40] or clean["threads"].split("\n")[0][:40], json.dumps(clean, ensure_ascii=False), clean["updated"]))
     return clean
+
+def tistory_writer_url(raw):
+    parsed=urllib.parse.urlsplit(text(raw,200,"티스토리 주소").strip())
+    if (parsed.scheme!="https" or parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment
+        or parsed.path not in ("","/") or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.tistory\.com",parsed.netloc)
+        or parsed.hostname in ("notice.tistory.com","www.tistory.com")):
+        raise Problem("내 티스토리 블로그 주소를 https://이름.tistory.com 형식으로 적어 주세요.")
+    return "https://"+parsed.netloc+"/manage/newpost/"
+
+def extension_for(body):
+    channel=body.get("channel","naver")
+    if channel not in ("naver","tistory"):raise Problem("블로그 종류를 확인해 주세요.")
+    return TISTORY_EXTENSION if channel=="tistory" else EXTENSION
 
 def upload(body):
     try:
@@ -159,12 +210,12 @@ def upload(body):
         raise Problem("읽을 수 없는 사진이에요. JPG 또는 PNG로 다시 넣어 주세요.")
     return {"id": mid, "url": "/media/" + mid + ".jpg"}
 
-def remote(url, payload=None, token=None, timeout=150):
+def remote(url, payload=None, token=None, timeout=150, form=False):
     headers = {"Accept": "application/json", "User-Agent": "DajeongStudio/0.1"}
     data = None
     if payload is not None:
-        headers["Content-Type"] = "application/json"
-        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/x-www-form-urlencoded" if form else "application/json"
+        data = urllib.parse.urlencode({key:str(value).lower() if isinstance(value,bool) else value for key,value in payload.items()}).encode() if form else json.dumps(payload).encode()
     if token:
         headers["Authorization"] = "Bearer " + token
     try:
@@ -180,6 +231,8 @@ def remote(url, payload=None, token=None, timeout=150):
         finally:
             e.close()
         host=urllib.parse.urlparse(url).hostname
+        if host in ("graph.threads.com","graph.threads.net") and (status==401 or code==190):
+            raise Problem("Threads 토큰 인증에 실패했어요. Threads 전용 토큰인지, 만료되거나 해제되지 않았는지 확인해 주세요 (THREADS_ACCESS_TOKEN).",502)
         if host in ("graph.instagram.com","graph.facebook.com") and (status==401 or code==190):
             raise Problem("Meta 토큰 인증에 실패했어요. INSTAGRAM_LOGIN_TYPE과 토큰이 같은 로그인 방식인지, 토큰이 만료되거나 해제되지 않았는지 확인해 주세요 (INSTAGRAM_ACCESS_TOKEN).",502)
         if host=="api.openai.com" and status==401:
@@ -192,21 +245,43 @@ def remote(url, payload=None, token=None, timeout=150):
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         raise Problem("외부 서비스 응답을 확인하지 못했어요. 연결 상태를 확인해 주세요.", 502)
 
-def generate(body):
+def generate(body, progress=lambda *args: None):
+    if "platforms" in body:
+        from platform_writing import generate_selected
+        return generate_selected(body,progress,sys.modules[__name__])
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         raise Problem(".env에 OPENAI_API_KEY를 설정해 주세요.", 409)
     prompt = text(body.get("prompt", ""), 6000, "글 작성 요청").strip()
     if not prompt:
         raise Problem("어떤 이야기를 쓰고 싶은지 알려 주세요.")
+    language=body.get("language","ko")
+    if language not in ("ko","en"):raise Problem("작성 언어를 다시 선택해 주세요.")
+    threads_tone=body.get("threads_tone","casual")
+    if threads_tone not in ("casual","polite","witty"):raise Problem("Threads 말투를 다시 선택해 주세요.")
+    try:
+        extras=read_fields(body)
+        place=selected_place(body.get("selected_place"))
+    except ValueError as error:raise Problem(str(error))
     ids = image_ids(body.get("images", []))
+    confirmed_facts=text(body.get("facts", ""),4000,"직접 경험한 사실")
+    writing_sample=text(body.get("style", ""),3000,"내 말투 예시")
+    tone=text(body.get("tone", ""),100,"글의 분위기")
+    progress("사진과 적어주신 이야기를 준비하고 있어요.",1)
+    place_result={"facts":[],"sources":[],"usage":{},"web_search_calls":0,"notice":""}
+    if place and body.get("research") is True:
+        progress("선택한 장소의 이름과 주소를 함께 확인하며 정보를 찾고 있어요.",2)
+        try:place_result=research_place(place,remote,{"memo":prompt,"confirmed_facts":confirmed_facts,"campaign_brief":extras["campaign_brief"] if extras["campaign_enabled"] else ""})
+        except (Problem,PlaceError):
+            place_result["notice"]="장소 상세정보 검색을 마치지 못했어요. 선택한 이름·주소와 적어주신 경험으로 작성했어요. 영업시간·가격은 직접 확인해 주세요."
+    context_body={**body,"selected_place":place,"verified_place_facts":place_result["facts"]}
     content = [{"type": "input_text", "text": json.dumps({
-        "request": prompt, "tone": text(body.get("tone", ""), 100, "글의 분위기"),
-        "writing_sample": text(body.get("style", ""), 3000, "내 말투 예시"),
+        **writing_context(body),"selected_place":place,"verified_place_facts":place_result["facts"],"language":language,"threads_tone":threads_tone,"request": prompt, "tone": tone,
+        "writing_sample": writing_sample,
         "tone_guidance":TONES.get(body.get("tone",""),"사용자가 선택한 분위기를 문체에만 적용하고 사실은 바꾸지 않는다."),
         "photo_count": len(ids), "research": bool(body.get("research")),
         "layout_style":template_for(body.get("template","reference"))["label"],
-        "confirmed_facts":text(body.get("facts", ""), 4000, "직접 경험한 사실")}, ensure_ascii=False)}]
+        "confirmed_facts":confirmed_facts}, ensure_ascii=False)}]
     notes=photo_notes(prompt,len(ids))
     for index,mid in enumerate(ids):
         content.append({"type":"input_text","text":json.dumps({"photo_number":index+1,"marker":"[[photo:"+str(index+1)+"]]","photo_note":notes[index]},ensure_ascii=False)})
@@ -231,6 +306,8 @@ def generate(body):
 글은 짧은 도입 → 해당 사진 위치 표시 → 그 사진의 관찰/사용자 감상 → 다음 사진 → 짧은 마무리 순서로 구성한다.
 모든 사진 위치 표시는 글 중간에 한 번씩 사용하며, 여러 사진을 맨 끝에 몰아넣지 않는다.
 가짜 평가나 타인의 발언을 인용하지 않는다.
+confirmed_facts는 사용자가 꼭 넣고 싶은 이야기다. 블로그와 인스타그램 양쪽에 빠짐없이 반영한다.
+특히 인스타그램에는 confirmed_facts의 각 줄을 원문 그대로 자연스러운 위치에 넣는다. 해시태그보다 우선하며 다른 설명을 줄여 분량을 맞춘다.
 인스타그램은 블로그를 복사하지 말고 기억에 남는 도입·실제 경험·해시태그 5~8개로 1900자 이내에 쓴다.
 한국어 콘텐츠 편집자로서 사용자의 요청, 사진, 말투 예시로 네이버 블로그와
 인스타그램 캡션을 각각 작성하라. 사진만 보고 방문 경험, 위치, 가격, 맛을 지어내지 말라.
@@ -243,16 +320,21 @@ sources([{title,url}]). 검색하지 않았다면 sources는 [].
 본문에 URL, 마크다운 링크, 웹 출처 인용 문법을 넣지 말고 출처는 sources에만 둔다.
 사용자가 직접 적은 경험과 웹에서 찾은 사실을 구분하고 제3자의 평가를 내 경험으로 표현하지 말라.
 자료가 부족하면 분량을 채우려고 경험이나 정보를 만들지 말고 짧게 작성하라."""
-    instructions += "\n"+BLOG_GUIDANCE
+    instructions += "\n"+BLOG_GUIDANCE+"\n"+THREADS_GUIDANCE+"\n추가 JSON 키: threads(500자 이내), facts_translation(영어 선택 시 필수 메모의 충실한 영어 표현, 한국어면 빈 문자열).\n"+language_guidance(language)+"\n"+threads_tone_guidance(threads_tone,language)
+    instructions+="\n"+community_guidance(body)
+    if extras["campaign_enabled"]:instructions+="\n"+CAMPAIGN_GUIDANCE
+    instructions+="\n"+PLACE_GUIDANCE
+    if place:instructions+="\n선택한 장소의 검색은 별도 단계에서 처리했다. web_search를 다시 실행하지 말고 verified_place_facts만 참고한다."
     payload = {"model": os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
         "instructions": instructions, "input": [{"role": "user", "content": content}],
         "max_output_tokens": 5000, "store": False}
     if payload["model"].startswith("gpt-5"):
         payload["reasoning"]={"effort":"low"}
         payload["max_output_tokens"]=6500
-    if body.get("research"):
+    if body.get("research") and not place:
         payload.update(tools=[{"type": "web_search"}], tool_choice="required",
                        include=["web_search_call.action.sources"])
+    progress("사진과 메모로 블로그·인스타그램·Threads 글을 쓰고 있어요." + (" 필요한 정보도 함께 찾고 있어요." if body.get("research") and not place else ""),2)
     result = remote("https://api.openai.com/v1/responses", payload, key)
     output = "".join(p.get("text", "") for item in result.get("output", [])
         if item.get("type") == "message" for p in item.get("content", []) if p.get("type") == "output_text")
@@ -268,13 +350,15 @@ sources([{title,url}]). 검색하지 않았다면 sources는 [].
         raise Problem("AI 응답 형식이나 길이가 맞지 않아요. 다시 작성해 주세요.", 502)
     polish_usage={};polish_warning="";polished=False
     writing_model=os.environ.get("OPENAI_WRITING_MODEL") or "gpt-5.4"
-    if body.get("tone") in LIVELY_TONES:
+    if language=="en" or body.get("tone") in LIVELY_TONES:
         try:
-            refined,polish_usage=polish_blog(generated,body,writing_model,key,remote)
+            progress("말투를 자연스럽게 다듬고 있어요.",3)
+            refined,polish_usage=polish_blog(generated,context_body,writing_model,key,remote)
             generated.update(refined);polished=True
         except (Problem,ValueError,KeyError,TypeError) as error:
             polish_warning="말투 다듬기를 끝내지 못해 첫 초안을 유지했어요. 사진 위치와 문장을 확인해 주세요. 사유: "+getattr(error,"message",str(error))
-    sources = {}
+    progress("사진 순서와 꼭 넣고 싶은 이야기를 확인하고 있어요.",4)
+    sources = {source["url"]:source for source in place_result["sources"]}
     for item in result.get("output", []):
         for part in item.get("content", []):
             for a in part.get("annotations", []):
@@ -283,22 +367,40 @@ sources([{title,url}]). 검색하지 않았다면 sources는 [].
         for s in item.get("action", {}).get("sources", []):
             if s.get("url"):
                 sources.setdefault(s["url"], {"title": s.get("title", s["url"]), "url": s["url"]})
-    if body.get("research") and not any(x.get("type") == "web_search_call" for x in result.get("output", [])):
+    if body.get("research") and not place and not any(x.get("type") == "web_search_call" for x in result.get("output", [])):
         raise Problem("자료 검색 실행을 확인하지 못했어요.", 502)
     disclosure=body.get("disclosure","none")
     if disclosure not in DISCLOSURES:
         raise Problem("광고 표시를 확인해 주세요.")
-    generated["blog"]=mobile_lines(photo_layout(disclose(clean_blog(generated["blog"]),disclosure),len(ids)),body.get("template","reference"))
-    generated["instagram"]=disclose(generated["instagram"],disclosure)
+    generated.update(extras)
+    generated["selected_place"]=place
+    generated["research"]=body.get("research") is True
+    generated["language"]=language
+    generated["threads_tone"]=threads_tone
+    generated["facts"]=text(body.get("facts", ""),4000,"직접 경험한 사실")
+    generated["facts_translation"]=text(generated.get("facts_translation",""),4000,"영어 필수 메모") if language=="en" else ""
+    generated["facts_translation_source"]=generated["facts"] if language=="en" and generated["facts_translation"] else ""
+    if language=="en" and re.search(r"[가-힣]",generated["facts"]) and (not generated["facts_translation"] or re.search(r"[가-힣]",generated["facts_translation"])):
+        raise Problem("필수 메모의 영어 표현을 만들지 못했어요. 잠시 후 다시 만들어 주세요.",502)
+    generated["threads"]=text(generated.get("threads",""),500,"Threads 글")
+    if generated["threads"]:generated["threads"]=disclose(generated["threads"],disclosure,language)
+    if len(generated["threads"])>500:raise Problem("광고 안내를 포함한 Threads 글이 너무 길어요. 짧게 작성해 달라고 요청해 주세요.",502)
+    generated["blog"]=mobile_lines(photo_layout(disclose(clean_blog(generated["blog"]),disclosure,language),len(ids)),body.get("template","reference") if language=="ko" else "english")
+    generated["instagram"]=disclose(required_instagram_story(generated["instagram"],caption_facts(generated)),disclosure,language)
     if len(generated["instagram"])>2200:
-        raise Problem("광고 안내를 포함한 캡션 길이가 너무 길어요. 요청에 짧게 작성하라고 적어 주세요.",502)
+        raise Problem("꼭 넣고 싶은 이야기와 광고 안내를 포함하면 인스타그램 글이 2,200자를 넘어요. 꼭 넣고 싶은 이야기를 줄여 다시 만들어 주세요.",502)
     generated["facts"]=text(body.get("facts", ""), 4000, "직접 경험한 사실")
     generated["disclosure"]=disclosure
     generated["template"]=body.get("template","reference") if body.get("template","reference") in TEMPLATES else "reference"
     usage=result.get("usage",{})
-    generated["generation"]={"model":payload["model"],"style_pass":polished,"writing_model":writing_model if polished else None,"input_tokens":usage.get("input_tokens",0)+polish_usage.get("input_tokens",0),
-        "output_tokens":usage.get("output_tokens",0)+polish_usage.get("output_tokens",0),"web_search_calls":sum(x.get("type")=="web_search_call" for x in result.get("output",[]))}
+    generated["generation"]={"model":payload["model"],"style_pass":polished,"writing_model":writing_model if polished else None,"input_tokens":usage.get("input_tokens",0)+polish_usage.get("input_tokens",0)+place_result["usage"].get("input_tokens",0),
+        "output_tokens":usage.get("output_tokens",0)+polish_usage.get("output_tokens",0)+place_result["usage"].get("output_tokens",0),"web_search_calls":place_result["web_search_calls"]+sum(x.get("type")=="web_search_call" for x in result.get("output",[]))}
+    generated["managed_blog_tags"]=tags_from(extras["hashtags"])
+    generated["blog"]=apply_tags(generated["blog"],generated["managed_blog_tags"])
+    generated["campaign_checks"]=mission_checks({**body,**generated,"images":ids})
     generated["checks"]=review({**body,**generated,"images":ids})
+    if not generated["threads"]:generated["checks"].append({"level":"warning","message":"Threads 글이 응답에 없어요. Threads 탭에서 직접 적거나 다시 만들어 주세요."})
+    if place_result["notice"]:generated["checks"].append({"level":"warning","message":place_result["notice"]})
     if polish_warning:generated["checks"].append({"level":"warning","message":polish_warning})
     generated["sources"] = normalize_sources(list(sources.values()))
     return {**generated, "images": ids}
@@ -312,7 +414,7 @@ def blog_html(draft):
         font_data=base64.b64encode(font_file.read_bytes()).decode()
         notice=font_license.read_text(encoding="utf-8").replace("*/","* /")
         font_css="<style>/*"+notice+"*/@font-face{font-family:NanumBareunHipi;src:url(data:font/woff2;base64,"+font_data+") format('woff2');font-weight:400}</style>"
-    chunks = ['<!doctype html><html lang="ko"><meta charset="utf-8">'+font_css+'<title>' + html.escape(draft["title"]) +
+    chunks = ['<!doctype html><html lang="'+('en' if draft.get("language")=="en" else 'ko')+'"><meta charset="utf-8">'+font_css+'<title>' + html.escape(draft["title"]) +
         '</title><body style="max-width:700px;margin:40px auto;line-height:2;font-size:15px;text-align:'+template_for(draft.get("template"))["align"]+';font-family:'+font_stack+'">',
         "<h1>" + html.escape(draft["title"]) + "</h1>"]
     used = set()
@@ -389,7 +491,7 @@ def connect_media(progress):
         url=PHOTO_TUNNEL.start(progress)
     except RuntimeError as error:
         raise Problem(str(error),502)
-    return {"url":url,"message":"사진 전용 HTTPS 연결을 준비했어요. 인스타그램 발행을 다시 눌러 주세요."}
+    return {"url":url,"message":"사진 전용 HTTPS 연결을 준비했어요. 인스타그램 또는 Threads 발행을 다시 눌러 주세요."}
 
 def instagram_configuration():
     keys=("INSTAGRAM_ACCOUNT_ID","INSTAGRAM_ACCESS_TOKEN","PUBLIC_MEDIA_BASE_URL")
@@ -411,8 +513,11 @@ def instagram_configuration():
             invalid.append("PUBLIC_MEDIA_BASE_URL")
     return {"configured":configured,"missing":missing,"invalid":invalid,"ready":not missing and not invalid,"temporary_connection":PHOTO_TUNNEL.active(),"login_type":instagram_login_type()}
 
+def threads_service():
+    return ThreadsPublisher(lambda url,payload,token,timeout:remote(url,payload,token,timeout,form=True),Problem,db,get_draft,MEDIA,PHOTO_TUNNEL,media_base_url)
+
 def publish_instagram(did):
-    draft = get_draft(did)
+    draft = platform_view(get_draft(did),"instagram")
     account = os.environ.get("INSTAGRAM_ACCOUNT_ID", "")
     origin = media_base_url().rstrip("/")
     configuration=instagram_configuration()
@@ -421,6 +526,8 @@ def publish_instagram(did):
         raise Problem("인스타그램 연결 설정을 확인해 주세요: "+", ".join(fields)+". 사진은 Meta가 읽을 수 있는 공개 HTTPS 주소가 필요해요.",409)
     if not draft["images"] or not draft["instagram"].strip():
         raise Problem("사진과 인스타그램 본문을 먼저 준비해 주세요.")
+    if draft.get("language")=="en" and re.search(r"[가-힣]",draft.get("facts","")) and not caption_facts(draft):
+        raise Problem("영어 필수 메모가 아직 반영되지 않았어요. 글을 다시 만든 뒤 확인해 주세요.",409)
     aid = uuid.uuid4().hex
     with db() as c:
         try:
@@ -463,9 +570,10 @@ def start_job(fn, with_progress=False):
     jid = uuid.uuid4().hex
     with JOB_LOCK:
         JOBS[jid] = {"state":"running", "message":"작업을 시작하고 있어요."}
-    def progress(message):
+    def progress(message, stage=None):
         with JOB_LOCK:
             JOBS[jid] = {"state":"running", "message":message}
+            if stage is not None:JOBS[jid]["stage"]=stage
     def run():
         try:
             result = fn(progress) if with_progress else fn()
@@ -560,14 +668,16 @@ class Handler(BaseHTTPRequestHandler):
                 filename = "index.html" if path == "/" else path[1:]
                 data = (ROOT / "static" / filename).read_bytes().replace(b"__STUDIO_TOKEN__", TOKEN.encode())
                 self.send(data, content_type=mimetypes.guess_type(filename)[0] + "; charset=utf-8")
+            elif path in ("/fonts/nanum-myeongjo.woff2","/fonts/nanum-gothic.woff2"):
+                self.send((ROOT/"static"/path.lstrip("/")).read_bytes(),content_type="font/woff2")
             elif path == "/fonts/nanumbareunhipi.woff2":
                 self.send((ROOT/"static/fonts/nanumbareunhipi.woff2").read_bytes(),content_type="font/woff2")
             elif path == "/fonts/OFL.txt":
                 self.send((ROOT/"static/fonts/OFL.txt").read_bytes(),content_type="text/plain; charset=utf-8")
             elif path == "/api/status":
-                self.send({"ai":bool(os.environ.get("OPENAI_API_KEY")), "naver":bool(os.environ.get("NAVER_BLOG_ID")),
+                self.send({"project_directory":str(ROOT),"ai":bool(os.environ.get("OPENAI_API_KEY")), "naver":bool(os.environ.get("NAVER_BLOG_ID")),
                     "instagram":instagram_configuration()["ready"],
-                    "instagram_details":instagram_configuration(),"naver_guard":NAVER_GUARD.status(),"model":os.environ.get("OPENAI_MODEL","gpt-5.4-mini")})
+                    "threads":threads_service().configuration()["ready"],"threads_details":threads_service().configuration(),"instagram_details":instagram_configuration(),"naver_guard":NAVER_GUARD.status(),"model":os.environ.get("OPENAI_MODEL","gpt-5.4-mini"),"place_model":os.environ.get("OPENAI_PLACE_MODEL") or "gpt-5.4-nano"})
             elif path == "/api/drafts":
                 with db() as c:
                     self.send([dict(r) for r in c.execute("SELECT id,title,updated FROM drafts ORDER BY updated DESC")])
@@ -579,9 +689,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(job or {"state":"failed","error":"작업 정보를 찾을 수 없어요."})
             elif path == "/api/history":
                 with db() as c:
-                    self.send([dict(r) for r in c.execute("SELECT a.id,a.draft_id,a.state,a.created,d.title FROM attempts a LEFT JOIN drafts d ON a.draft_id=d.id ORDER BY a.created DESC LIMIT 30")])
+                    self.send([dict(r) for r in c.execute("SELECT a.id,a.draft_id,a.state,a.created,d.title,'instagram' AS channel FROM attempts a LEFT JOIN drafts d ON a.draft_id=d.id UNION ALL SELECT a.id,a.draft_id,a.state,a.created,d.title,'threads' AS channel FROM threads_attempts a LEFT JOIN drafts d ON a.draft_id=d.id ORDER BY created DESC LIMIT 50")])
             elif path.startswith("/export/"):
-                self.send(blog_html(get_draft(path.split("/")[-1])).encode(), content_type="text/html; charset=utf-8")
+                export_platform="tistory" if urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("platform")==["tistory"] else "naver"
+                self.send(blog_html(platform_view(get_draft(path.split("/")[-1]),export_platform)).encode(),content_type="text/html; charset=utf-8")
             else:
                 raise Problem("페이지를 찾을 수 없어요.", 404)
         except Problem as e:
@@ -613,11 +724,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise Problem("입력 형식을 확인해 주세요.")
             if self.path == "/api/extension/block":
-                result=EXTENSION.block(text(body.get("code",""),64,"전달 코드"))
+                result=extension_for(body).block(text(body.get("code",""),64,"전달 코드"))
             elif self.path == "/api/extension/redeem":
-                result=EXTENSION.redeem(text(body.get("code",""),64,"전달 코드"))
+                result=extension_for(body).redeem(text(body.get("code",""),64,"전달 코드"))
             elif self.path == "/api/extension/report":
-                result=EXTENSION.report(text(body.get("token",""),64,"보고 코드"),body.get("state"),body.get("count"),body.get("diagnostic"))
+                result=extension_for(body).report(text(body.get("token",""),64,"보고 코드"),body.get("state"),body.get("count"),body.get("diagnostic"))
+            elif self.path == "/api/tistory/handoff":
+                writer=tistory_writer_url(body.get("blog_url",""))
+                draft=get_draft(text(body.get("id",""),32,"초안 번호"))
+                result=TISTORY_EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True)
+                result.update(writer_url=writer,channel="tistory")
             elif self.path == "/api/naver/handoff":
                 draft=get_draft(text(body.get("id",""),32,"초안 번호"))
                 result=EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True)
@@ -629,8 +745,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = upload(body)
             elif self.path == "/api/drafts":
                 result = save_draft(body)
+            elif self.path == "/api/places/search":
+                def find_places():
+                    try:return search_places(body.get("query"),remote)
+                    except PlaceError as error:raise Problem(str(error))
+                result=start_job(find_places)
             elif self.path == "/api/generate":
-                result = start_job(lambda: generate(body))
+                result = start_job(lambda progress: generate(body,progress),with_progress=True)
             elif self.path == "/api/naver/unblock":
                 if body.get("confirm") is not True:
                     raise Problem("네이버 공식 화면에서 정상 로그인과 제한 해제 확인이 필요해요.",400)
@@ -639,7 +760,19 @@ class Handler(BaseHTTPRequestHandler):
                 NAVER_GUARD.unblock()
                 result=NAVER_GUARD.status()
             elif self.path == "/api/review":
-                result={"checks":review(body)}
+                review_platform="naver" if body.get("review_channel")=="blog" else body.get("review_channel")
+                candidate=platform_view(body,review_platform) if review_platform in ("naver","tistory","instagram","threads") else body
+                if review_platform=="tistory":candidate["review_channel"]="blog"
+                result={"checks":review(candidate)}
+            elif self.path == "/api/threads/check":
+                result=threads_service().check()
+            elif self.path == "/api/publish/threads":
+                if body.get("confirm") is not True:raise Problem("발행 확인이 필요해요.")
+                did=text(body.get("id",""),32)
+                get_draft(did)
+                include=body.get("with_images",True)
+                if type(include) is not bool:raise Problem("사진 포함 여부를 확인해 주세요.")
+                result=start_job(lambda progress:threads_service().publish(did,progress,include),with_progress=True)
             elif self.path == "/api/instagram/check":
                 result=check_instagram_connection()
             elif self.path == "/api/media/connect":
@@ -667,11 +800,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send({"error":"처리 중 오류가 발생했어요."},500)
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1",PORT),Handler)
-    print(f"Dajeong Studio: http://127.0.0.1:{PORT}",flush=True)
+    try:release_instance=acquire_instance(PORT)
+    except RuntimeError as error:
+        print(str(error),flush=True)
+        raise SystemExit(1)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1",PORT),Handler)
+    except OSError:
+        print("앱을 시작하지 못했어요. 이미 실행 중인 콘텐츠 스튜디오 창을 닫은 뒤 다시 실행해 주세요.",flush=True)
+        raise SystemExit(1)
+    print(f"Mellow Studio: http://127.0.0.1:{PORT}",flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        if release_instance:release_instance()
