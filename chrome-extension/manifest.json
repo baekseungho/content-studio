@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mellow Studio · 블로그 글쓰기 도우미",
-  "version": "1.5.3",
+  "version": "1.6.0",
   "description": "로그인된 네이버·티스토리 편집기에 글과 사진을 옮깁니다. 최종 발행은 직접 진행합니다.",
   "permissions": [
     "activeTab",

@@ -1,6 +1,9 @@
 "use strict";
 // executeScript로 전달되므로 이 함수는 외부 변수나 라이브러리에 의존하지 않는다.
 async function editorAction(mode,payload){
+ if(mode==="progress"){const progress=window.__mellowTransfer;return progress&&progress.id===payload?.transferId?progress:null;}
+ const updateProgress=(message,done=0,total=0)=>{if(payload?.transferId)window.__mellowTransfer={id:payload.transferId,state:"running",message,done,total,updated:Date.now()};};
+ const completed=result=>{if(payload?.transferId)window.__mellowTransfer={id:payload.transferId,state:"finished",result,updated:Date.now()};return result;};
  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  const sectionText=el=>{
   const clone=el.cloneNode(true);clone.querySelectorAll(".se-placeholder,.se-help-placeholder,.se-guide").forEach(n=>n.remove());
@@ -67,7 +70,7 @@ async function editorAction(mode,payload){
  const toolbarDiagnostic=()=>relatedDocs().flatMap((doc,index)=>[...doc.querySelectorAll('button,[role="option"]')]
   .filter(el=>visible(el)&&(/se-/.test(el.className)||el.hasAttribute("data-name")||el.closest('[role="toolbar"]')))
   .slice(0,60).map(el=>({document:index,class:String(el.className).slice(0,180),name:el.getAttribute("data-name"),value:el.getAttribute("data-value"),label:(el.getAttribute("title")||el.getAttribute("aria-label")||el.textContent||"").trim().slice(0,50),disabled:Boolean(el.disabled)}))).slice(0,100);
- if(mode==="probe")return {blocked,eligible:Boolean(title&&body&&!existing&&!blocked),titleFound:Boolean(title),bodyFound:Boolean(body),existing,iframeCount:document.querySelectorAll("iframe").length};
+ if(mode==="probe")return {blocked,eligible:Boolean(title&&body&&!existing&&!blocked&&window.__mellowTransfer?.state!=="running"),titleFound:Boolean(title),bodyFound:Boolean(body),existing,inProgress:window.__mellowTransfer?.state==="running",iframeCount:document.querySelectorAll("iframe").length};
  let changed=false;
  try{
   if(blocked)throw Object.assign(Error("보호조치·추가 인증이 보여 중단했어요. 공식 네이버에서 직접 확인해 주세요."),{blocked:true});
@@ -302,6 +305,7 @@ async function editorAction(mode,payload){
       throw Error((isTitle?"제목":"본문")+" "+(i+1)+"번째 줄 "+(chunkIndex+1)+"번째 조각의 반영을 확인하지 못했어요. "+(emoji?"이모지":"문자")+" 입력 이후 화면과 초안이 달라 추가 입력을 중단했어요. 이미 입력된 글은 다시 넣지 않았어요.");
      }
      written+=chunk;lineWritten+=chunk;textSync.confirmedCharacters=normal(written).length;
+     if(payload?.transferId)updateProgress(isTitle?"제목을 옮기고 있어요.":"본문 입력 · "+(i+1)+" / "+lines.length+"줄",i,lines.length);
     }
    }
    const wantedLines=lines.filter(line=>line.trim()).length;
@@ -390,6 +394,9 @@ async function editorAction(mode,payload){
    }
    if(photoCount()!==expectedTotal)throw Error("사진 "+photos.length+"장 중 로딩 확인은 "+photoCount()+"장이에요. 자동 재시도하지 말고 열린 편집기를 확인해 주세요.");
   };
+  const references=[...payload.body.matchAll(/\[\[photo:(\d+)\]\]/g)].map(match=>Number(match[1]));
+  if(references.some(index=>index<1||index>payload.photos.length)||new Set(references).size!==references.length)throw Error("사진 위치 표시가 중복되거나 범위를 벗어나 입력을 시작하지 않았어요. 앱에서 초안을 다시 저장해 주세요.");
+  updateProgress("제목을 옮기고 있어요.");
   const help=document.querySelector(".se-help-panel-close-button");if(visible(help))help.click();
   await insert(title,payload.title);changed=true;
   if(sectionText(title)!==payload.title.trim())throw Error("제목 입력이 확인되지 않았어요.");
@@ -433,7 +440,7 @@ async function editorAction(mode,payload){
   let targetBody=body,lastBoundary=null;
   for(let step=0;step<plan.length;step++){
    if(security())throw Object.assign(Error("보호조치를 감지해 중단했어요."),{blocked:true});
-   const block=plan[step];
+   const block=plan[step];updateProgress(block.text?"본문을 옮기고 있어요.":"사진 "+(block.photo+1)+" / "+payload.photos.length+"장을 옮기고 있어요.",step,plan.length);
    if(block.text){
     await insert(targetBody,block.text);
     const paragraphs=[...document.querySelectorAll(".se-section-text .se-text-paragraph")].filter(el=>visible(el)&&sectionText(el));
@@ -450,18 +457,23 @@ async function editorAction(mode,payload){
    }
   }
   if(photoCount()!==payload.photos.length)throw Error("사진 수가 일치하지 않아 완료로 처리하지 않았어요.");
+  const compact=value=>value.normalize("NFC").replace(/[\s\u200b\ufeff\ufe0e\ufe0f]/g,"");
+  const actualBody=()=>[...document.querySelectorAll(".se-section-text")].filter(visible).map(sectionText).join("\n");
+  const expectedBody=payload.body.replace(/\[\[photo:\d+\]\]/g,"").replace(/^##\s+/gm,"");
+  if(compact(actualBody())!==compact(expectedBody))throw Error("본문 전체가 원고와 일치하지 않아 완료로 처리하지 않았어요. 열린 편집기를 확인해 주세요. 글은 다시 넣지 않았어요.");
+  updateProgress("글 전체·사진 수와 정렬·글꼴을 확인하고 있어요.",plan.length,plan.length);
   const beforeRepair=[...document.querySelectorAll(".se-section-text")].map(el=>sectionText(el)).join("\n");
   await repairFormat();
   if([...document.querySelectorAll(".se-section-text")].map(el=>sectionText(el)).join("\n")!==beforeRepair)throw Error("서식 확인 중 본문이 바뀌어 완료로 기록하지 않았어요. 열린 편집기를 확인해 주세요.");
   const formatting=formatCheck();
-  return {state:formatting.verified?"ready":"partial",stage:"입력·서식 결과 확인",count:photoCount(),formatting,
+  return completed({state:formatting.verified?"ready":"partial",stage:"입력·서식 결과 확인",count:photoCount(),formatting,
     diagnostics:{textSync,formatAttempts,toolbar:toolbarDiagnostic()},
-    message:formatting.verified?"글·사진 전달과 정렬·글꼴·크기 적용을 확인했어요. 네이버에서 내용을 확인한 뒤 발행해 주세요.":"글과 사진은 입력됐지만 요청한 서식을 모두 확인하지 못했어요. 정렬·글꼴·크기 진단을 확인하고, 필요하면 확장에서 ‘서식만 다시 적용’을 눌러 주세요. 글은 다시 넣지 마세요."};
+    message:formatting.verified?"글·사진 전달과 정렬·글꼴·크기 적용을 확인했어요. 네이버에서 내용을 확인한 뒤 발행해 주세요.":"글과 사진은 입력됐지만 요청한 서식을 모두 확인하지 못했어요. 정렬·글꼴·크기 진단을 확인하고, 필요하면 확장에서 ‘서식만 다시 적용’을 눌러 주세요. 글은 다시 넣지 마세요."});
  }catch(error){
-  return {state:error.blocked?"blocked":"failed",stage:activeStep,count:photoCount(),
+  return completed({state:error.blocked?"blocked":"failed",stage:activeStep,count:photoCount(),
     diagnostics:{textSync,formatAttempts,toolbar:toolbarDiagnostic(),titleEditable:Boolean(title?.isContentEditable),bodyEditable:Boolean(body?.isContentEditable),
       activeTag:document.activeElement?.tagName||"",activeEditable:Boolean(document.activeElement?.isContentEditable),
       editableCount:document.querySelectorAll('[contenteditable="true"]').length,focusPath:focusPath(),upload:uploadDiagnostic(),requestedTemplate:payload?.format?.label||""},
-    message:error.message+(changed?" 일부 내용이 남아 있을 수 있어요.":"")};
+    message:error.message+(changed?" 일부 내용이 남아 있을 수 있어요.":"")});
  }
 }

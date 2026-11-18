@@ -54,3 +54,26 @@ class LogicHttpTests(unittest.TestCase):
    try:self.assertFalse(started.wait(.05))
    finally:release.set();disconnect.join(3);publish.join(3)
    self.assertFalse(disconnect.is_alive());self.assertFalse(publish.is_alive());self.assertEqual(reply[0][0],200);self.assertEqual(len(jobs),1);self.wait(jobs[0])
+
+ def test_tistory_unlock_requires_confirmation_and_keeps_cooldown(self):
+  import tempfile
+  from pathlib import Path
+  from extension_bridge import ExtensionBridge
+  from naver_guard import NaverGuard
+  with tempfile.TemporaryDirectory() as folder:
+   root=Path(folder);guard=NaverGuard(root/'guard.json');guard.reserve('fixture');guard.block('추가 인증');bridge=ExtensionBridge(root,guard,channel='tistory')
+   with patch.object(app,'TISTORY_EXTENSION',bridge):
+    self.assertEqual(self.post('/api/tistory/unblock',{})[0],400);self.assertTrue(guard.status()['blocked'])
+    status,result=self.post('/api/tistory/unblock',{'confirm':True});self.assertEqual(status,200);self.assertFalse(result['blocked']);self.assertGreater(result['cooldown_seconds'],0)
+ def test_inspection_is_readonly_and_uses_the_extension_origin_rules(self):
+  import tempfile
+  from pathlib import Path
+  from extension_bridge import ExtensionBridge
+  from naver_guard import NaverGuard
+  with tempfile.TemporaryDirectory() as folder:
+   root=Path(folder);bridge=ExtensionBridge(root,NaverGuard(root/'guard.json'));writer='https://blog.naver.com/fixture?Redirect=Write&';code=bridge.create({'id':'a'*32,'title':'private title','blog':'private body','images':[]},writer_url=writer)['code']
+   with patch.object(app,'EXTENSION',bridge):
+    self.assertEqual(self.post('/api/extension/inspect',{'code':code})[0],403)
+    request=urllib.request.Request(self.base+'/api/extension/inspect',data=json.dumps({'code':code}).encode(),headers={'Content-Type':'application/json','X-Dajeong-Extension':'1','Origin':'chrome-extension://'+'a'*32})
+    with urllib.request.urlopen(request) as response:result=json.load(response)
+   self.assertEqual(result['writer_url'],writer);self.assertNotIn('body',result);self.assertNotIn('title',result);self.assertIn(code,bridge.tickets);self.assertEqual(bridge.guard.status()['attempts_24h'],0)

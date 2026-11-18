@@ -742,7 +742,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/status":
                 self.send({"project_directory":str(ROOT),"ai":bool(os.environ.get("OPENAI_API_KEY")), "naver":bool(os.environ.get("NAVER_BLOG_ID")),
                     "instagram":instagram_configuration()["ready"],
-                    "threads":threads_service().configuration()["ready"],"threads_details":threads_service().configuration(),"instagram_details":instagram_configuration(),"naver_guard":NAVER_GUARD.status(),"model":os.environ.get("OPENAI_MODEL","gpt-5.4-mini"),"place_model":os.environ.get("OPENAI_PLACE_MODEL") or "gpt-5.4-nano"})
+                    "threads":threads_service().configuration()["ready"],"threads_details":threads_service().configuration(),"instagram_details":instagram_configuration(),"naver_guard":NAVER_GUARD.status(),"tistory_guard":TISTORY_EXTENSION.guard.status(),"model":os.environ.get("OPENAI_MODEL","gpt-5.4-mini"),"place_model":os.environ.get("OPENAI_PLACE_MODEL") or "gpt-5.4-nano"})
             elif path == "/api/drafts":
                 self.send(list_drafts())
             elif path.startswith("/api/drafts/"):
@@ -764,7 +764,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         origin=self.headers.get("Origin","")
-        if self.path not in ("/api/extension/redeem","/api/extension/report","/api/extension/block") or not re.fullmatch(r"chrome-extension://[a-p]{32}",origin) or self.headers.get("Host") not in HOSTS:
+        if self.path not in ("/api/extension/redeem","/api/extension/report","/api/extension/block","/api/extension/inspect") or not re.fullmatch(r"chrome-extension://[a-p]{32}",origin) or self.headers.get("Host") not in HOSTS:
             self.send({"error":"허용되지 않은 요청입니다."},403)
             return
         self.send_response(204)
@@ -776,7 +776,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            extension_route=self.path in ("/api/extension/redeem","/api/extension/report","/api/extension/block")
+            extension_route=self.path in ("/api/extension/redeem","/api/extension/report","/api/extension/block","/api/extension/inspect")
             origin=self.headers.get("Origin","")
             extension_request=extension_route and self.headers.get("X-Dajeong-Extension")=="1" and (not origin or re.fullmatch(r"chrome-extension://[a-p]{32}",origin))
             if self.headers.get("Host") not in HOSTS or not (extension_request or (not extension_route and secrets.compare_digest(self.headers.get("X-Studio-Token",""), TOKEN))):
@@ -787,7 +787,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise Problem("입력 형식을 확인해 주세요.")
-            if self.path == "/api/extension/block":
+            if self.path == "/api/extension/inspect":
+                result=extension_for(body).inspect(text(body.get("code",""),64,"전달 코드"))
+            elif self.path == "/api/extension/block":
                 result=extension_for(body).block(text(body.get("code",""),64,"전달 코드"))
             elif self.path == "/api/extension/redeem":
                 result=extension_for(body).redeem(text(body.get("code",""),64,"전달 코드"))
@@ -796,15 +798,16 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/tistory/handoff":
                 writer=tistory_writer_url(body.get("blog_url",""))
                 draft=get_draft(text(body.get("id",""),32,"초안 번호"))
-                result=TISTORY_EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True)
+                result=TISTORY_EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True,writer_url=writer)
                 result.update(writer_url=writer,channel="tistory")
             elif self.path == "/api/naver/handoff":
                 draft=get_draft(text(body.get("id",""),32,"초안 번호"))
                 blog_id=os.environ.get("NAVER_BLOG_ID","")
                 if not re.fullmatch(r"[a-zA-Z0-9_-]+",blog_id):
                     raise Problem("네이버 블로그 ID를 확인해 주세요.")
-                result=EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True)
-                result["writer_url"]="https://blog.naver.com/"+urllib.parse.quote(blog_id)+"?Redirect=Write&"
+                writer="https://blog.naver.com/"+urllib.parse.quote(blog_id)+"?Redirect=Write&"
+                result=EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True,writer_url=writer)
+                result["writer_url"]=writer
             elif self.path == "/api/upload":
                 result = upload(body)
             elif self.path == "/api/drafts":
@@ -826,13 +829,12 @@ class Handler(BaseHTTPRequestHandler):
                 result=start_job(lambda progress:generate_selected(body,progress,sys.modules[__name__],revision=True),with_progress=True,kind="writing")
             elif self.path == "/api/generate":
                 result = start_job(lambda progress: generate(body,progress),with_progress=True,kind="writing")
-            elif self.path == "/api/naver/unblock":
-                if body.get("confirm") is not True:
-                    raise Problem("네이버 공식 화면에서 정상 로그인과 제한 해제 확인이 필요해요.",400)
-                if NAVER_PROCESS is not None and NAVER_PROCESS.poll() is None:
-                    raise Problem("기존 네이버 도우미 창을 먼저 닫아 주세요.",409)
-                NAVER_GUARD.unblock()
-                result=NAVER_GUARD.status()
+            elif self.path in ("/api/naver/unblock","/api/tistory/unblock"):
+                label="티스토리" if self.path=="/api/tistory/unblock" else "네이버"
+                guard=TISTORY_EXTENSION.guard if label=="티스토리" else NAVER_GUARD
+                if body.get("confirm") is not True:raise Problem(label+" 공식 화면에서 정상 로그인과 제한 해제 확인이 필요해요.",400)
+                if label=="네이버" and NAVER_PROCESS is not None and NAVER_PROCESS.poll() is None:raise Problem("기존 네이버 도우미 창을 먼저 닫아 주세요.",409)
+                guard.unblock();result=guard.status()
             elif self.path == "/api/review":
                 review_platform="naver" if body.get("review_channel")=="blog" else body.get("review_channel")
                 candidate=platform_view(body,review_platform) if review_platform in ("naver","tistory","instagram","threads") else body

@@ -486,6 +486,7 @@ $("publish").addEventListener("click",run(async()=>{
  if(tab==="blog"&&blogDestination==="tistory"&&!$("tistoryUrl").value.trim()&&!await detectTistory())return;
  setWorkflow(3);status=await api("/api/status");
  if(tab==="blog"&&blogDestination==="naver"&&status.naver_guard?.blocked){showProgress("네이버 입력 잠금: "+status.naver_guard.reason);showNaverDiagnostic({stage:"네이버 보호 잠금",detail:status.naver_guard.reason});openSettings("blog");return;}
+ if(tab==="blog"&&blogDestination==="tistory"&&status.tistory_guard?.blocked){showProgress("티스토리 입력 잠금: "+status.tistory_guard.reason);showNaverDiagnostic({stage:"티스토리 입력 잠금",detail:status.tistory_guard.reason});openSettings("blog");return;}
  if((tab==="blog"&&blogDestination==="naver"&&!status.naver)||(tab==="instagram"&&!status.instagram)){openSettings(tab);return;}
  await saveDraft(true);
  const checked=await api("/api/review",{...draft,review_channel:activePlatform()==="tistory"?"tistory":tab});showQuality(checked.checks);
@@ -542,16 +543,16 @@ function extensionMessage(id,message){
 async function sendToNaver(handoff){
  let id;try{id=localStorage.getItem("dajeong-extension");}catch{}
  if(!/^[a-p]{32}$/.test(id||"")){showHandoff(handoff);return;}
- let timer,finished=false;
+ let timer,finished=false,dispatched=false;
  lock(true);setWorkflow(3,"sending");showProgress("네이버 글쓰기 화면을 열고 있어요.");
  try{
   const ping=await extensionMessage(id,{type:"ping"});if(!ping?.ok)throw Error(ping?.message||"도우미 연결 응답이 없어요.");
-  if(ping.version!=="1.5.3")throw Error("현재 확장 버전은 "+(ping.version||"확인 불가")+"예요. chrome://extensions에서 Mellow 확장을 새로고침하고 1.5.3을 확인해 주세요.");
+  if(ping.protocol!==2)throw Error("현재 확장 버전은 "+(ping.version||"확인 불가")+"예요. chrome://extensions에서 Mellow 확장을 새로고침하고 1.6.0 이상을 확인해 주세요.");
   timer=setInterval(()=>extensionMessage(id,{type:"status"}).then(state=>{if(!finished&&state?.message)showProgress(state.message);}).catch(()=>{}),1300);
-  const result=await extensionMessage(id,{type:"prepare",base:location.origin,code:handoff.code,writer_url:handoff.writer_url,channel:handoff.channel||"naver"});
+  dispatched=true;const result=await extensionMessage(id,{type:"prepare",base:location.origin,code:handoff.code,writer_url:handoff.writer_url,channel:handoff.channel||"naver"});
   finished=true;clearInterval(timer);
   showProgress(result?.detail||result?.message||"네이버에 옮겨진 내용을 확인해 주세요.");showNaverDiagnostic(result);
- }catch(error){finished=true;showProgress(error.message);showNaverDiagnostic({ok:false,stage:"앱과 확장 연결",detail:error.message});showHandoff(handoff);}
+ }catch(error){finished=true;showProgress(error.message);showNaverDiagnostic({ok:false,uncertain:dispatched,stage:"앱과 확장 연결",detail:dispatched?"도우미의 입력 결과를 확인하지 못했어요. 아래 ‘결과 확인·기록 다시 보내기’를 눌러 주세요. 글을 새로 넣지 않아요.":error.message});if(!dispatched)showHandoff(handoff);}
  finally{clearInterval(timer);lock(false);}
 }
 function showHandoff(handoff){
@@ -580,6 +581,7 @@ function showNaverDiagnostic(result){
  const heading=document.createElement("strong");heading.textContent=success?"✓ "+blogName+"로 잘 옮겼어요":result?.contentReady?"서식을 한 번 확인해 주세요":"전달을 마치지 못했어요";box.append(heading);
  para(box,success?blogName+"에서 내용을 확인하고 마지막 발행을 눌러 주세요.":result?.detail||result?.message||"응답이 없어 결과를 확인하지 못했어요.");
  if(success)$("jobProgress").hidden=true;
+ if(result?.reportPending||result?.uncertain){const warning=document.createElement("p");warning.textContent=result.recordingWarning||"입력 결과를 확인한 뒤 앱에 기록만 다시 보내요. 글·사진은 다시 넣지 않아요.";box.append(warning);const retry=document.createElement("button");retry.type="button";retry.className="secondary";retry.textContent="결과 확인·기록 다시 보내기";retry.onclick=run(async()=>{let id;try{id=localStorage.getItem("dajeong-extension");}catch{}if(!id)throw Error("Mellow 확장에서 결과를 확인해 주세요.");retry.disabled=true;try{const expectedDraft=draft.id,expectedPlatform=activePlatform();const response=await extensionMessage(id,{type:"retryReport",draftId:expectedDraft,channel:expectedPlatform});notify(response.message);if(response.ok&&response.result&&draft.id===expectedDraft&&activePlatform()===expectedPlatform)showNaverDiagnostic(response.result);}finally{retry.disabled=false;}});box.append(retry);}
  const details=document.createElement("details");details.className="diagnostic-details";details.open=!success;
  const summary=document.createElement("summary");summary.textContent="자세한 결과 · 문제 확인";details.append(summary);box.append(details);
  para(details,"확장 "+(result?.version||"버전 확인 안 됨")+" · "+(result?.stage||"결과 확인"));
@@ -711,6 +713,7 @@ function openSettings(channel){
   }));
   shell.insertBefore(button,advanced);
  }
+ if(!instagramOnly&&status.tistory_guard?.blocked){para(box,"티스토리 입력 잠금: "+status.tistory_guard.reason);const unlock=document.createElement("button");unlock.type="button";unlock.className="secondary";unlock.textContent="티스토리 정상 로그인 확인·입력 잠금 해제";unlock.onclick=run(async()=>{if(!confirm("공식 티스토리 화면에서 추가 인증을 완료하고 정상 로그인한 것을 확인하셨나요?"))return;await api("/api/tistory/unblock",{confirm:true});status=await api("/api/status");$("modal").close();openSettings("blog");});box.append(unlock);advanced.open=true;}
  para(box,"사진 주소는 임의의 예시가 아니라 실제로 사진을 읽을 수 있는 서버 주소여야 해요. localhost나 PC 폴더 경로는 사용할 수 없어요.");
  para(box,"임시 연결을 사용하면 PUBLIC_MEDIA_BASE_URL은 직접 입력하지 않아도 돼요. 고정 서버를 사용하려면 .env를 수정하고 start.cmd를 다시 실행해 주세요.");
  para(box,"설정됨은 값의 존재 여부예요. 토큰 권한이나 실제 발행 성공을 의미하지 않아요.");

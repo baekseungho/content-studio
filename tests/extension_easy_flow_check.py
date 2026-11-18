@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix="easy-extension-") as temp:
     worker.evaluate("async()=>{const [tab]=await chrome.tabs.query({active:true});await chrome.storage.session.set({fixtureReady:tab.id});}")
     expect(page.locator("#publish")).to_be_enabled(timeout=60000)
     saved_diagnostic=json.loads((Path(temp)/"data"/"naver-extension-diagnostics.json").read_text(encoding="utf-8"))
-    assert saved_diagnostic["version"]=="1.5.3" and saved_diagnostic["formatting"]["verified"]
+    assert saved_diagnostic["version"]==json.loads((ROOT/"chrome-extension/manifest.json").read_text(encoding="utf-8"))["version"] and saved_diagnostic["formatting"]["verified"]
     assert "report_token" not in saved_diagnostic
     print("First input and local diagnostic recording verified",flush=True)
     expect(page.locator("#jobProgress")).to_contain_text("적용을 확인했어요",timeout=1000)
@@ -119,6 +119,7 @@ with tempfile.TemporaryDirectory(prefix="easy-extension-") as temp:
      state["attempts"]=[value-61 for value in state["attempts"]]
      guard_file.write_text(json.dumps(state),encoding="utf-8")
     age_test_attempts()
+    limited.close()
     second=auto_attempt()
     expect(page.locator("#jobProgress")).to_contain_text("적용을 확인했어요")
     expect(second.locator("img.se-image-resource")).to_have_count(1)
@@ -127,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="easy-extension-") as temp:
     page.locator("#naverManual").click()
     expect(page.locator("#modal")).to_be_visible()
     code=page.locator('input[aria-label="일회용 전달 코드"]').input_value()
-    manual=context.new_page();manual.goto("https://blog.naver.com/test_fixture?manual=1")
+    manual=context.new_page();manual.goto("https://blog.naver.com/test_fixture?Redirect=Write&manual=1")
     manual_id=worker.evaluate("async()=>{const tabs=await chrome.tabs.query({url:'https://blog.naver.com/*'});const tab=tabs.find(tab=>tab.url.includes('manual=1'));await chrome.tabs.update(tab.id,{active:true});return tab.id;}")
     setup.evaluate("args=>{document.getElementById('base').value=args.base;document.getElementById('code').value=args.code;document.getElementById('fill').click();}",{"base":base,"code":code})
     expect(setup.locator("#fill")).to_be_enabled(timeout=60000)

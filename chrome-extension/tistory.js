@@ -1,5 +1,8 @@
 ﻿"use strict";
 async function tistoryAction(mode,payload){
+ if(mode==='progress'){const progress=window.__mellowTransfer;return progress&&progress.id===payload?.transferId?progress:null;}
+ const updateProgress=(message,done=0,total=0)=>{if(payload?.transferId)window.__mellowTransfer={id:payload.transferId,state:'running',message,done,total,updated:Date.now()};};
+ const completed=result=>{if(payload?.transferId)window.__mellowTransfer={id:payload.transferId,state:'finished',result,updated:Date.now()};return result;};
  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  const title=document.querySelector('#post-title-inp,input[name="title"],textarea[placeholder*="제목"]');
  const tiny=window.tinymce||window.tinyMCE;
@@ -7,33 +10,45 @@ async function tistoryAction(mode,payload){
  const body=editor?.getBody?.();
  const blocked=Boolean(document.querySelector('input[name="captcha"],#captcha,[data-testid="captcha"]'));
  const existing=Boolean(title?.value?.trim()||body?.textContent?.trim()||body?.querySelector('img,video,iframe'));
- if(mode==='probe')return {eligible:Boolean(title&&body&&!existing&&!blocked),titleFound:Boolean(title),bodyFound:Boolean(body),existing,blocked};
+ if(mode==='probe')return {eligible:Boolean(title&&body&&!existing&&!blocked&&window.__mellowTransfer?.state!=="running"),inProgress:window.__mellowTransfer?.state==="running",titleFound:Boolean(title),bodyFound:Boolean(body),existing,blocked};
  let stage='편집기 확인',count=0,changed=false;
  const uploads=[];
  const diagnostic=()=>({uploads,images:[...(editor?.getBody?.()?.querySelectorAll('img')||[])].map(img=>({complete:img.complete,width:img.naturalWidth,protocol:new URL(img.src,location.href).protocol})),editorFound:Boolean(editor),titleFound:Boolean(title),fileInputs:[...document.querySelectorAll('input[type=file]')].map(el=>({accept:el.accept,disabled:el.disabled})),buttons:[...document.querySelectorAll('button,[role=button]')].slice(0,50).map(el=>(el.getAttribute('title')||el.getAttribute('aria-label')||el.textContent||'').trim().slice(0,45))});
  try{
   if(blocked)throw Error('티스토리에서 추가 인증을 완료한 후 다시 시도해 주세요.');
   if(!title||!body)throw Error('티스토리 기본 편집기를 찾지 못했어요. HTML·마크다운 모드라면 기본 모드로 전환해 주세요.');
-  if(existing)throw Error('이미 내용이 있는 편집기에는 덮어쓰지 않아요. 빈 새 글을 열어 주세요.');
-  if(!payload||typeof payload.body!=='string'||typeof payload.title!=='string'||!Array.isArray(payload.photos)||payload.photos.length>10)throw Error('전달된 초안 형식이 올바르지 않아요.');
+  if(existing&&mode!=='format')throw Error('이미 내용이 있는 편집기에는 덮어쓰지 않아요. 빈 새 글을 열어 주세요.');
+  if(mode!=='format'&&(!payload||typeof payload.body!=='string'||typeof payload.title!=='string'||!Array.isArray(payload.photos)||payload.photos.length>10))throw Error('전달된 초안 형식이 올바르지 않아요.');
   const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
   const align=payload.format?.align==='left'?'left':'center';
   const fontName=payload.format?.font_key==='nanumgothic'?'Nanum Gothic':'Nanum Myeongjo';
   const fontLabel=fontName==='Nanum Gothic'?'나눔고딕':'나눔명조';
   const style="text-align:"+align+";font-family:'"+fontName+"',"+(fontName==='Nanum Gothic'?'sans-serif':'serif')+";font-size:15px;line-height:2";
   const normal=s=>s.normalize('NFC').replace(/[\s\u200b\ufe0e\ufe0f]/g,'');
+  if(mode==='format'){
+   stage='기존 글의 서식만 적용';const before=body.textContent,oldTitle=title.value,images=[...body.querySelectorAll('img')].map(img=>img.src);
+   const paragraphs=[...body.querySelectorAll('p,h1,h2,h3,h4,li')].filter(el=>el.textContent.trim()&&!el.closest('figure,figcaption'));
+   for(const paragraph of paragraphs){paragraph.style.textAlign=align;paragraph.style.fontFamily="'"+fontName+"'";paragraph.style.fontSize='15px';const walker=paragraph.ownerDocument.createTreeWalker(paragraph,NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode())if(node.textContent.trim()){node.parentElement.style.fontFamily="'"+fontName+"'";node.parentElement.style.fontSize='15px';}}
+   editor.nodeChanged();editor.save();
+   if(body.textContent!==before||title.value!==oldTitle||JSON.stringify([...body.querySelectorAll('img')].map(img=>img.src))!==JSON.stringify(images))throw Error('서식 적용 중 내용이나 사진이 달라져 중단했어요. 편집기를 확인해 주세요.');
+   const view=editor.getWin?.()||body.ownerDocument.defaultView;const alignment=paragraphs.length>0&&paragraphs.every(el=>view.getComputedStyle(el).textAlign===align);
+   const leaves=[];for(const paragraph of paragraphs){const walker=paragraph.ownerDocument.createTreeWalker(paragraph,NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode())if(node.textContent.trim())leaves.push(node.parentElement);}
+   const size=leaves.length>0&&leaves.every(el=>Math.abs(parseFloat(view.getComputedStyle(el).fontSize)-15)<.5),font=leaves.length>0&&leaves.every(el=>view.getComputedStyle(el).fontFamily.includes(fontName)),verified=alignment&&size&&font;
+   return {state:verified?'ready':'partial',count:images.length,stage,message:verified?'티스토리의 정렬·글꼴·크기를 다시 적용했어요. 글·사진은 유지했어요.':'글·사진은 유지했지만 일부 서식을 확인하지 못했어요.',formatting:{requested:true,alignment,size,font,verified}};
+  }
+  const markers=[...payload.body.matchAll(/\[\[photo:(\d+)\]\]/g)].map(m=>Number(m[1]));
+  if(markers.join(',')!==payload.photos.map((_,i)=>i+1).join(','))throw Error('사진 위치와 순서가 맞지 않아요. 앱에서 다시 저장해 주세요.');
+  updateProgress('제목을 옮기고 있어요.');
   stage='제목 입력';
   const proto=title.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto,'value').set.call(title,payload.title);
   title.dispatchEvent(new Event('input',{bubbles:true}));title.dispatchEvent(new Event('change',{bubbles:true}));changed=true;
-  const markers=[...payload.body.matchAll(/\[\[photo:(\d+)\]\]/g)].map(m=>Number(m[1]));
-  if(markers.join(',')!==payload.photos.map((_,i)=>i+1).join(','))throw Error('사진 위치와 순서가 맞지 않아요. 앱에서 다시 저장해 주세요.');
   const blocks=payload.body.split(/(\[\[photo:\d+\]\])/g);const expectedSegments=[];
   for(const block of blocks){
    if(!block.trim())continue;
    const marker=block.match(/^\[\[photo:(\d+)\]\]$/);
    if(!marker){
-    stage='본문·서식 입력';
+    stage='본문·서식 입력';updateProgress('본문을 옮기고 있어요.');
     const html=block.trim().split(/\n\s*\n/).map(paragraph=>{
      const heading=paragraph.startsWith('## '),tag=heading?'h3':'p',text=heading?paragraph.slice(3):paragraph;
      expectedSegments.push(normal(text));
@@ -41,7 +56,7 @@ async function tistoryAction(mode,payload){
     }).join('');
     editor.focus();editor.insertContent(html);editor.nodeChanged();editor.save();
    }else{
-    stage='사진 '+marker[1]+' 업로드';
+    stage='사진 '+marker[1]+' 업로드';updateProgress('사진 '+marker[1]+' / '+payload.photos.length+'장을 옮기고 있어요.',count,payload.photos.length);
     const before=[...editor.getBody().querySelectorAll('img')];
     const photo=payload.photos[Number(marker[1])-1];
     const bookmark=editor.selection.getBookmark(2,true);
@@ -94,9 +109,9 @@ async function tistoryAction(mode,payload){
     editor.insertContent('<p style="'+style+'"><br></p>');editor.nodeChanged();editor.save();
    }
   }
-  stage='입력 결과 확인';editor.save();
-  let offset=0;const actualText=normal(editor.getBody().textContent);
-  const textVerified=expectedSegments.every(segment=>{const found=actualText.indexOf(segment,offset);if(found<0)return false;offset=found+segment.length;return true;});
+  stage='입력 결과 확인';updateProgress('글 전체·사진 수와 서식을 확인하고 있어요.',count,payload.photos.length);editor.save();
+  const prose=editor.getBody().cloneNode(true);prose.querySelectorAll('figcaption').forEach(node=>node.remove());
+  const actualText=normal(prose.textContent),textVerified=actualText===expectedSegments.join('');
   if(title.value!==payload.title||!textVerified)throw Error('입력한 글의 반영을 확인하지 못했어요. 일부 내용이 남아 있으니 편집기를 확인해 주세요.');
   if(count!==payload.photos.length)throw Error('사진 개수를 확인해 주세요.');
   const paragraphs=[...editor.getBody().querySelectorAll('p,h3')].filter(el=>el.textContent.trim()&&!el.closest("figure,figcaption"));
@@ -110,6 +125,6 @@ async function tistoryAction(mode,payload){
   const size=leaves.length>0&&leaves.every(el=>Math.abs(parseFloat(view.getComputedStyle(el).fontSize)-15)<.5);
   const font=leaves.length>0&&leaves.every(el=>view.getComputedStyle(el).fontFamily.includes(fontName));
   const verified=alignment&&size&&font;
-  return {state:verified?'ready':'partial',ok:verified,count,stage,message:verified?'티스토리에 글과 사진을 옮겼어요. 내용을 확인한 뒤 직접 발행해 주세요.':'글과 사진은 옮겼지만 일부 서식이 확인되지 않았어요. 글을 다시 넣지 말고 편집기와 진단을 확인해 주세요.',formatting:{requested:true,alignment,size,font,verified,expected:{align,size:15,font:fontLabel}}};
- }catch(error){return {state:blocked?'blocked':'failed',count,stage,message:error.message+(changed?' 일부 내용이 남아 있을 수 있어요.':''),diagnostics:diagnostic()};}
+  return completed({state:verified?'ready':'partial',ok:verified,count,stage,message:verified?'티스토리에 글과 사진을 옮겼어요. 내용을 확인한 뒤 직접 발행해 주세요.':'글과 사진은 옮겼지만 일부 서식이 확인되지 않았어요. 글을 다시 넣지 말고 편집기와 진단을 확인해 주세요.',formatting:{requested:true,alignment,size,font,verified,expected:{align,size:15,font:fontLabel}}});
+ }catch(error){return completed({state:blocked?'blocked':'failed',count,stage,message:error.message+(changed?' 일부 내용이 남아 있을 수 있어요.':''),diagnostics:diagnostic()});}
 }
