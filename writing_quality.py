@@ -40,17 +40,18 @@ def review(draft):
             if not check["passed"]:add("error","체험단 미션 · "+check["label"]+" 확인 필요 ("+check["detail"]+")",**{key:check[key] for key in ("field","target","needle")})
     title=draft.get("title","").strip()
     blog=draft.get("blog","").strip()
-    insta=draft.get("instagram","").strip()
+    scoped_blog=draft.get("review_channel")=="blog"
+    insta="" if scoped_blog else draft.get("instagram","").strip()
     english_check(title,"title");english_check(blog,"body")
     count=character_count(blog,draft.get("campaign_count_spaces",False))
     if count>BLOG_MAX_CHARS:add("error",f"블로그 본문이 기본 상한을 넘어요 (현재 {count:,}자 / 최대 {BLOG_MAX_CHARS:,}자). 핵심 내용을 남겨 분량을 줄여 주세요.",code="blog_length_limit",field="body",target="body")
     if not title:add("error","블로그 제목이 비어 있어요.",field="title",target="title")
     if not blog:add("error","블로그 본문이 비어 있어요.",field="body",target="body")
-    if not insta:add("warning","인스타그램 캡션이 비어 있어요.")
+    if not scoped_blog and not insta:add("warning","인스타그램 캡션이 비어 있어요.")
     if len(insta)>2200:add("error","인스타그램 캡션이 2,200자를 넘어요.")
-    threads=draft.get("threads","")
+    threads="" if scoped_blog else draft.get("threads","")
     if len(threads)>500:add("error","Threads 글이 500자를 넘어요. 내용을 줄여 주세요.")
-    if draft.get("language")=="en" and draft.get("facts") and re.search(r"[가-힣]",draft["facts"]) and (not draft.get("facts_translation") or draft.get("facts_translation_source")!=draft["facts"]):
+    if not scoped_blog and draft.get("language")=="en" and draft.get("facts") and re.search(r"[가-힣]",draft["facts"]) and (not draft.get("facts_translation") or draft.get("facts_translation_source")!=draft["facts"]):
         add("warning","영어 글의 필수 메모가 바뀌었어요. 글을 다시 만들면 영어로 반영할 수 있어요.")
     images=draft.get("images",[])
     if not images:add("warning","선택한 사진이 없어요. 인스타그램 발행에는 사진이 필요해요.")
@@ -97,3 +98,11 @@ def caption_facts(draft):
     if draft.get("language")!="en" or not re.search(r"[가-힣]",facts):return facts
     if draft.get("facts_translation_source")==facts and not re.search(r"[가-힣]",draft.get("facts_translation","")):return draft.get("facts_translation","")
     return ""
+
+
+def publication_errors(draft,channel):
+    """Shared publication gate; draft saving remains possible before completion."""
+    from platform_writing import view
+    candidate=view(draft,channel)
+    candidate["review_channel"]="blog" if channel in ("naver","tistory") else channel
+    return [item for item in review(candidate) if item["level"]=="error"]

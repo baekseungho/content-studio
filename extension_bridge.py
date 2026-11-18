@@ -7,6 +7,7 @@ import time
 from content_rules import clean_blog
 from platform_writing import view as platform_view
 from campaigns import mission_checks
+from writing_quality import publication_errors
 from writing_templates import template_for
 
 class HandoffError(Exception):
@@ -31,6 +32,8 @@ class ExtensionBridge:
             self.prune()
             missing=[check["label"] for check in mission_checks(draft) if not check["passed"]]
             if missing:raise HandoffError("체험단 미션을 먼저 확인해 주세요: "+", ".join(missing[:4]),409)
+            errors=publication_errors(draft,self.channel)
+            if errors:raise HandoffError("원고를 먼저 확인해 주세요: "+" · ".join(item["message"] for item in errors[:3]),409)
             if self.guard.status()["blocked"]:
                 raise HandoffError("네이버 보호 잠금 상태예요. 공식 네이버에서 직접 제한 해제와 정상 로그인을 확인해 주세요.",409)
             if draft["id"] in self.guard.read().get("completed",[]) and not allow_repeat:

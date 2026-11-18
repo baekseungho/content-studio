@@ -106,8 +106,8 @@ class PlatformGenerationTests(unittest.TestCase):
     def test_tistory_handoff_receives_only_tistory_body_and_title(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);bridge=ExtensionBridge(root,NaverGuard(root/'guard.json'),channel="tistory")
-            draft={"id":"a"*32,"title":"네이버","blog":"네이버 원고","tistory_title":"티스토리","tistory":"티스토리 원고","images":[],"platform_languages":{"tistory":"en"}}
+            draft={"id":"a"*32,"title":"네이버","blog":"네이버 원고","tistory_title":"Tistory title","tistory":"Independent Tistory draft.","images":[],"platform_languages":{"tistory":"en"}}
             result=bridge.redeem(bridge.create(draft)["code"])
-            self.assertIn("티스토리",json.dumps(result,ensure_ascii=False));self.assertNotIn("네이버 원고",json.dumps(result,ensure_ascii=False))
+            self.assertIn("Independent Tistory draft.",json.dumps(result,ensure_ascii=False));self.assertNotIn("네이버 원고",json.dumps(result,ensure_ascii=False))
 
 if __name__=="__main__":unittest.main()

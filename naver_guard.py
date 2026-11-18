@@ -13,7 +13,13 @@ class NaverGuard:
         if not self.path.exists():
             return {"attempts":[],"completed":[],"blocked":False}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            state=json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(state,dict):raise ValueError("invalid guard state")
+            attempts=state.get("attempts",[]);completed=state.get("completed",[])
+            if not isinstance(attempts,list) or any(type(value) not in (int,float) or not math.isfinite(value) for value in attempts):raise ValueError("invalid attempt history")
+            if not isinstance(completed,list) or any(not isinstance(value,str) for value in completed):raise ValueError("invalid completion history")
+            if type(state.get("blocked",False)) is not bool or not isinstance(state.get("reason",""),str):raise ValueError("invalid block state")
+            return state
         except (ValueError,OSError):
             # 손상된 상태를 무시해 반복 실행하지 않는다.
             return {"attempts":[],"completed":[],"blocked":True,"reason":"이전 실행 상태를 확인할 수 없어요."}

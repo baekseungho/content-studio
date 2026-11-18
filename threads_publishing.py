@@ -6,7 +6,8 @@ import sqlite3
 import time
 import uuid
 from urllib.parse import urlsplit
-from PIL import Image,ImageOps
+from publish_media import prepare_photo
+from writing_quality import publication_errors
 
 SCHEMA="""
 CREATE TABLE IF NOT EXISTS threads_attempts(id TEXT PRIMARY KEY,draft_id TEXT,state TEXT,result TEXT,created REAL);
@@ -62,6 +63,8 @@ class ThreadsPublisher:
   if not config['ready']:raise self.problem('Threads 계정을 먼저 연결해 주세요.',409)
   text=draft.get('threads','').strip()
   if not text or len(text)>500:raise self.problem('Threads 본문을 1~500자로 준비해 주세요.')
+  errors=publication_errors(draft,'threads')
+  if errors:raise self.problem('Threads 원고를 먼저 확인해 주세요: '+' · '.join(item['message'] for item in errors[:3]),409)
   images=draft.get('images',[]) if with_images else []
   if images and not config['media_ready']:raise self.problem('사진을 올리려면 사진 연결을 먼저 켜 주세요. 글만 발행할 때는 사진 연결이 필요 없어요.',409)
   for mid in images:
@@ -85,8 +88,7 @@ class ThreadsPublisher:
     children=[]
     for index,mid in enumerate(images):
      progress('사진 '+str(index+1)+'/'+str(len(images))+'장을 Threads에 전달하고 있어요.')
-     with Image.open(self.media/(mid+'.jpg')) as image:
-      ImageOps.pad(image.convert('RGB'),(1080,1350),color='#faf8f5').save(self.media/(mid+'-ig.jpg'),'JPEG',quality=90)
+     prepare_photo(self.media,mid)
      if self.tunnel.active():self.tunnel.allow(mid)
      payload={'media_type':'IMAGE','image_url':self.media_base().rstrip('/')+'/media/'+mid+'-ig.jpg'}
      if len(images)>1:payload['is_carousel_item']=True

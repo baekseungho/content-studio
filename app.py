@@ -6,6 +6,7 @@ import html
 import io
 import json
 import mimetypes
+import math
 import os
 from pathlib import Path
 import re
@@ -30,7 +31,8 @@ from threads_publishing import ThreadsPublisher,SCHEMA as THREADS_SCHEMA
 from content_rules import clean_blog
 from campaigns import publication_tags,read_fields,writing_context,tags_from,apply_tags,mission_checks,CAMPAIGN_GUIDANCE,community_guidance
 from naver_guard import NaverGuard
-from writing_quality import disclose,review,DISCLOSURES,required_instagram_story,caption_facts
+from writing_quality import disclose,review,publication_errors,DISCLOSURES,required_instagram_story,caption_facts
+from publish_media import prepare_photo
 from tones import TONES
 from channel_writing import THREADS_GUIDANCE,language_guidance,threads_tone_guidance
 from photo_layout import photo_layout
@@ -78,8 +80,8 @@ with db() as c:
     c.executescript(THREADS_SCHEMA)
 
 class Problem(Exception):
-    def __init__(self, message, status=400):
-        self.message, self.status = message, status
+    def __init__(self, message, status=400, code=None):
+        self.message, self.status, self.code = message, status, code
 
 def text(value,limit=30000,field="입력값"):
     if not isinstance(value,str):
@@ -175,8 +177,10 @@ def save_draft(body):
         "tone": text(body.get("tone", "밝고 자연스러운 일상 후기체"), 100, "글의 분위기"),
         "facts":text(body.get("facts", ""), 4000, "직접 경험한 사실"),"disclosure":disclosure,
         "images": image_ids(body.get("images", [])), "sources": [], "updated": time.time()}
-    editing=body.get("editing_platform") if clean["selective_generation"] else None
-    if editing is not None and editing not in ("naver","tistory","instagram","threads"):raise Problem("작성 중인 플랫폼을 다시 선택해 주세요.")
+    preferred=body.get("editing_platform")
+    if preferred is not None and (not isinstance(preferred,str) or preferred not in ("naver","tistory","instagram","threads")):raise Problem("작성 중인 플랫폼을 다시 선택해 주세요.")
+    clean["editing_platform"]=preferred
+    editing=preferred if clean["selective_generation"] else None
     for platform,field in (("naver","blog"),("tistory","tistory")):
         if editing in (None,platform) and clean[field].strip():clean[field]=photo_layout(disclose(clean_blog(clean[field]),disclosure,languages.get(platform,language)),len(clean["images"]))
     if editing in (None,"instagram") and clean["instagram"].strip():clean["instagram"]=disclose(required_instagram_story(clean["instagram"],caption_facts({**clean,"language":languages.get("instagram",language)})),disclosure,languages.get("instagram",language))
@@ -197,8 +201,20 @@ def save_draft(body):
     clean["campaign_checks"]=mission_checks(clean)
     clean["sources"]=normalize_sources(body.get("sources",[]))
     with db() as c:
-        c.execute("INSERT INTO drafts VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,data=excluded.data,updated=excluded.updated",
-                  (did, clean["title"] or clean["tistory_title"] or clean["prompt"][:40] or clean["instagram"].split("\n")[0][:40] or clean["threads"].split("\n")[0][:40], json.dumps(clean, ensure_ascii=False), clean["updated"]))
+        previous=c.execute("SELECT updated FROM drafts WHERE id=?",(did,)).fetchone()
+        expected=body.get("updated")
+        def conflict():return Problem("다른 창에서 이 글을 더 최근에 저장했어요. 지금 원고는 유지했어요. 새 이야기로 보관하거나 최신 저장 글을 열어 주세요.",409,"draft_conflict")
+        if previous:
+            if type(expected) not in (int,float) or not math.isfinite(expected) or expected!=previous["updated"]:raise conflict()
+            clean["updated"]=max(clean["updated"],previous["updated"]+0.000001)
+        title=clean["title"] or clean["tistory_title"] or clean["prompt"][:40] or clean["instagram"].split("\n")[0][:40] or clean["threads"].split("\n")[0][:40]
+        encoded=json.dumps(clean,ensure_ascii=False)
+        if previous:
+            changed=c.execute("UPDATE drafts SET title=?,data=?,updated=? WHERE id=? AND updated=?",(title,encoded,clean["updated"],did,expected))
+            if changed.rowcount!=1:raise conflict()
+        else:
+            try:c.execute("INSERT INTO drafts VALUES(?,?,?,?)",(did,title,encoded,clean["updated"]))
+            except sqlite3.IntegrityError:raise conflict()
     return clean
 
 def tistory_writer_url(raw):
@@ -553,6 +569,8 @@ def publish_instagram(did):
         raise Problem("사진과 인스타그램 본문을 먼저 준비해 주세요.")
     if draft.get("language")=="en" and re.search(r"[가-힣]",draft.get("facts","")) and not caption_facts(draft):
         raise Problem("영어 필수 메모가 아직 반영되지 않았어요. 글을 다시 만든 뒤 확인해 주세요.",409)
+    errors=publication_errors(draft,"instagram")
+    if errors:raise Problem("인스타그램 원고를 먼저 확인해 주세요: "+" · ".join(item["message"] for item in errors[:3]),409)
     aid = uuid.uuid4().hex
     with db() as c:
         try:
@@ -563,8 +581,7 @@ def publish_instagram(did):
     try:
         children = []
         for mid in draft["images"]:
-            with Image.open(MEDIA / (mid + ".jpg")) as im:
-                ImageOps.pad(im, (1080, 1350), color="#faf8f5").save(MEDIA / (mid + "-ig.jpg"), "JPEG", quality=90)
+            prepare_photo(MEDIA,mid)
             if PHOTO_TUNNEL.active():
                 PHOTO_TUNNEL.allow(mid)
             payload = {"image_url": origin + "/media/" + mid + "-ig.jpg"}
@@ -591,25 +608,48 @@ def publish_instagram(did):
         raise
 
 
-def start_job(fn, with_progress=False):
-    jid = uuid.uuid4().hex
+JOB_RETENTION_SECONDS=3600
+MAX_STORED_JOBS=128
+MAX_RUNNING_JOBS=8
+
+
+def _prune_jobs(now):
+    # Called with JOB_LOCK held. Running jobs are never evicted.
+    completed=sorted(((job.get("_finished",now),jid) for jid,job in JOBS.items() if job["state"]!="running"))
+    for finished,jid in completed:
+        if now-finished>JOB_RETENTION_SECONDS or len(JOBS)>=MAX_STORED_JOBS:JOBS.pop(jid,None)
+
+
+def jobs_running(*kinds):
+    with JOB_LOCK:return any(job["state"]=="running" and job.get("_kind") in kinds for job in JOBS.values())
+
+
+def start_job(fn, with_progress=False, kind=None):
+    jid=uuid.uuid4().hex
     with JOB_LOCK:
-        JOBS[jid] = {"state":"running", "message":"작업을 시작하고 있어요."}
-    def progress(message, stage=None):
+        now=time.monotonic();_prune_jobs(now)
+        running=[job for job in JOBS.values() if job["state"]=="running"]
+        if kind in ("writing","places","media") and any(job.get("_kind")==kind for job in running):
+            raise Problem({"writing":"이미 글을 만들고 있어요. 다른 창에서 시작한 작업이 끝난 뒤 다시 눌러 주세요.","places":"이미 장소를 찾고 있어요. 검색 결과를 기다려 주세요.","media":"사진 연결을 준비하고 있어요. 잠시만 기다려 주세요."}[kind],409,"job_in_progress")
+        if len(running)>=MAX_RUNNING_JOBS:raise Problem("진행 중인 작업이 많아요. 먼저 시작한 작업이 끝난 뒤 다시 시도해 주세요.",409)
+        meta={"_kind":kind,"_created":now}
+        JOBS[jid]={**meta,"state":"running","message":"작업을 시작하고 있어요."}
+    def progress(message,stage=None):
         with JOB_LOCK:
-            JOBS[jid] = {"state":"running", "message":message}
+            if JOBS.get(jid,{}).get("state")!="running":return
+            JOBS[jid]={**meta,"state":"running","message":message}
             if stage is not None:JOBS[jid]["stage"]=stage
     def run():
         try:
-            result = fn(progress) if with_progress else fn()
-            state = {"state":"done", "result":result}
-        except Problem as e:
-            state = {"state":"failed", "error":e.message}
-        except Exception:
-            state = {"state":"failed", "error":"작업 중 오류가 발생했어요. 설정과 연결 상태를 확인해 주세요."}
-        with JOB_LOCK:
-            JOBS[jid] = state
-    threading.Thread(target=run,daemon=True).start()
+            result=fn(progress) if with_progress else fn()
+            state={"state":"done","result":result}
+        except Problem as error:state={"state":"failed","error":error.message,**({"code":error.code} if error.code else {})}
+        except Exception:state={"state":"failed","error":"작업 중 오류가 발생했어요. 설정과 연결 상태를 확인해 주세요."}
+        with JOB_LOCK:JOBS[jid]={**meta,**state,"_finished":time.monotonic()}
+    try:threading.Thread(target=run,daemon=True).start()
+    except Exception:
+        with JOB_LOCK:JOBS.pop(jid,None)
+        raise Problem("작업을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.",503)
     return {"job":jid}
 
 NAVER_PROCESS = None
@@ -710,7 +750,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/jobs/"):
                 with JOB_LOCK:
                     job = JOBS.get(path.split("/")[-1])
-                self.send(job or {"state":"failed","error":"작업 정보를 찾을 수 없어요."})
+                self.send({key:value for key,value in job.items() if not key.startswith("_")} if job else {"state":"failed","error":"작업 정보를 찾을 수 없어요. 열린 계정에서 결과를 확인해 주세요."})
             elif path == "/api/history":
                 with db() as c:
                     self.send([dict(r) for r in c.execute("SELECT a.id,a.draft_id,a.state,a.created,d.title,'instagram' AS channel FROM attempts a LEFT JOIN drafts d ON a.draft_id=d.id UNION ALL SELECT a.id,a.draft_id,a.state,a.created,d.title,'threads' AS channel FROM threads_attempts a LEFT JOIN drafts d ON a.draft_id=d.id ORDER BY created DESC LIMIT 50")])
@@ -760,10 +800,10 @@ class Handler(BaseHTTPRequestHandler):
                 result.update(writer_url=writer,channel="tistory")
             elif self.path == "/api/naver/handoff":
                 draft=get_draft(text(body.get("id",""),32,"초안 번호"))
-                result=EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True)
                 blog_id=os.environ.get("NAVER_BLOG_ID","")
                 if not re.fullmatch(r"[a-zA-Z0-9_-]+",blog_id):
                     raise Problem("네이버 블로그 ID를 확인해 주세요.")
+                result=EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True)
                 result["writer_url"]="https://blog.naver.com/"+urllib.parse.quote(blog_id)+"?Redirect=Write&"
             elif self.path == "/api/upload":
                 result = upload(body)
@@ -773,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
                 def find_places():
                     try:return search_places(body.get("query"),remote)
                     except PlaceError as error:raise Problem(str(error))
-                result=start_job(find_places)
+                result=start_job(find_places,kind="places")
             elif self.path == "/api/blog/layout":
                 try:
                     option=layout_settings({"naver":body.get("settings")})["naver"]
@@ -783,9 +823,9 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as error:raise Problem(str(error))
             elif self.path == "/api/blog/expand":
                 from platform_writing import generate_selected
-                result=start_job(lambda progress:generate_selected(body,progress,sys.modules[__name__],revision=True),with_progress=True)
+                result=start_job(lambda progress:generate_selected(body,progress,sys.modules[__name__],revision=True),with_progress=True,kind="writing")
             elif self.path == "/api/generate":
-                result = start_job(lambda progress: generate(body,progress),with_progress=True)
+                result = start_job(lambda progress: generate(body,progress),with_progress=True,kind="writing")
             elif self.path == "/api/naver/unblock":
                 if body.get("confirm") is not True:
                     raise Problem("네이버 공식 화면에서 정상 로그인과 제한 해제 확인이 필요해요.",400)
@@ -806,13 +846,15 @@ class Handler(BaseHTTPRequestHandler):
                 get_draft(did)
                 include=body.get("with_images",True)
                 if type(include) is not bool:raise Problem("사진 포함 여부를 확인해 주세요.")
-                result=start_job(lambda progress:threads_service().publish(did,progress,include),with_progress=True)
+                result=start_job(lambda progress:threads_service().publish(did,progress,include),with_progress=True,kind="publishing")
             elif self.path == "/api/instagram/check":
                 result=check_instagram_connection()
             elif self.path == "/api/media/connect":
-                result = start_job(connect_media,with_progress=True)
+                result = start_job(connect_media,with_progress=True,kind="media")
             elif self.path == "/api/media/disconnect":
-                PHOTO_TUNNEL.close()
+                with JOB_LOCK:
+                    if any(job["state"]=="running" and job.get("_kind") in ("publishing","media") for job in JOBS.values()):raise Problem("사진 연결 준비 또는 발행이 진행 중이에요. 작업이 끝난 뒤 사진 연결을 꺼 주세요.",409)
+                    PHOTO_TUNNEL.close()
                 result={"disconnected":True}
             elif self.path in ("/api/publish/instagram","/api/naver/prepare"):
                 did = text(body.get("id",""),32)
@@ -820,14 +862,14 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path == "/api/publish/instagram":
                     if body.get("confirm") is not True:
                         raise Problem("발행 확인이 필요해요.")
-                    result = start_job(lambda: publish_instagram(did))
+                    result = start_job(lambda: publish_instagram(did),kind="publishing")
                 else:
                     raise Problem("별도 자동화 브라우저 방식은 사용하지 않아요. 크롬 확장으로 전달해 주세요.",409)
             else:
                 raise Problem("요청을 찾을 수 없어요.", 404)
             self.send(result)
         except (Problem,HandoffError) as e:
-            self.send({"error":e.message}, e.status)
+            self.send({"error":e.message,**({"code":e.code} if getattr(e,"code",None) else {})}, e.status)
         except (ValueError, TypeError, KeyError):
             self.send({"error":"입력 형식을 확인해 주세요."},400)
         except Exception:
