@@ -1,6 +1,6 @@
 """글쓰기 품질 점검과 사용자 선택 안내 문구. 외부 API를 호출하지 않는다."""
 import re
-from campaigns import mission_checks
+from campaigns import mission_checks,character_count,BLOG_MAX_CHARS
 DISCLOSURES={"none":"","gifted":"제품을 제공받아 작성한 글입니다.","paid":"광고비를 지급받아 작성한 글입니다.","experience":"식사 또는 이용권을 제공받아 작성한 글입니다."}
 
 DISCLOSURES_EN={"none":"","gifted":"This product was provided for this post.","paid":"Paid partnership.","experience":"A meal or service voucher was provided for this post."}
@@ -14,10 +14,14 @@ def disclose(value,kind,language="ko"):
 
 def review(draft):
     checks=[]
-    def add(level,message):
-        checks.append({"level":level,"message":message})
+    def add(level,message,**meta):
+        checks.append({"level":level,"message":message,**meta})
+    def english_check(value,field):
+        match=re.search(r"[가-힣]+",value)
+        if draft.get("language")=="en" and match:add("error",("인스타그램 " if draft.get("review_channel")=="instagram" else "")+"영문 원고에 한국어가 남아 있어요. 해당 부분을 영어로 고치거나 이 플랫폼 글을 다시 만들어 주세요.",field=field,target=field,needle=match.group())
     if draft.get("review_channel")=="instagram":
         caption=draft.get("instagram","").strip()
+        english_check(caption,"body")
         if not caption:add("error","인스타그램 글이 비어 있어요.")
         if len(caption)>2200:add("error","인스타그램 캡션이 2,200자를 넘어요.")
         if not draft.get("images"):add("warning","인스타그램 발행에는 사진이 필요해요.")
@@ -26,18 +30,22 @@ def review(draft):
         return checks
     if draft.get("review_channel")=="threads":
         value=draft.get("threads","").strip()
+        english_check(value,"body")
         if not value:add("error","Threads 글이 비어 있어요.")
         if len(value)>500:add("error","Threads 글이 500자를 넘어요.")
         if not checks:add("info","Threads 본문이 준비됐어요. 사진과 마지막 발행은 Threads에서 확인해 주세요.")
         return checks
     if draft.get("review_channel") not in ("threads","instagram"):
         for check in mission_checks(draft):
-            if not check["passed"]:add("error","체험단 미션 · "+check["label"]+" 확인 필요 ("+check["detail"]+")")
+            if not check["passed"]:add("error","체험단 미션 · "+check["label"]+" 확인 필요 ("+check["detail"]+")",**{key:check[key] for key in ("field","target","needle")})
     title=draft.get("title","").strip()
     blog=draft.get("blog","").strip()
     insta=draft.get("instagram","").strip()
-    if not title:add("error","블로그 제목이 비어 있어요.")
-    if not blog:add("error","블로그 본문이 비어 있어요.")
+    english_check(title,"title");english_check(blog,"body")
+    count=character_count(blog,draft.get("campaign_count_spaces",False))
+    if count>BLOG_MAX_CHARS:add("error",f"블로그 본문이 기본 상한을 넘어요 (현재 {count:,}자 / 최대 {BLOG_MAX_CHARS:,}자). 핵심 내용을 남겨 분량을 줄여 주세요.",code="blog_length_limit",field="body",target="body")
+    if not title:add("error","블로그 제목이 비어 있어요.",field="title",target="title")
+    if not blog:add("error","블로그 본문이 비어 있어요.",field="body",target="body")
     if not insta:add("warning","인스타그램 캡션이 비어 있어요.")
     if len(insta)>2200:add("error","인스타그램 캡션이 2,200자를 넘어요.")
     threads=draft.get("threads","")
@@ -68,7 +76,7 @@ def review(draft):
 def required_instagram_story(caption,facts):
     """Keep explicitly required notes intact, before the trailing hashtag block."""
     if not caption.strip() or not facts.strip():return caption
-    compact=lambda value:re.sub(r"\s+","",value)
+    compact=lambda value:re.sub(r"\s+","",value).casefold()
     present=compact(caption)
     missing=[]
     for line in facts.replace("\r\n","\n").replace("\r","\n").split("\n"):

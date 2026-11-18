@@ -21,13 +21,14 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from PIL import Image, ImageOps
+from blog_layout import all_settings as layout_settings,text_map as layout_text_map,reflow
 from platform_writing import migrate,view as platform_view,platform_languages
 from places import selected_place,search_places,research_place,PlaceError,PLACE_GUIDANCE
 from instance_lock import acquire_instance
 from media_tunnel import MediaTunnel
 from threads_publishing import ThreadsPublisher,SCHEMA as THREADS_SCHEMA
 from content_rules import clean_blog
-from campaigns import read_fields,writing_context,tags_from,apply_tags,mission_checks,CAMPAIGN_GUIDANCE,community_guidance
+from campaigns import publication_tags,read_fields,writing_context,tags_from,apply_tags,mission_checks,CAMPAIGN_GUIDANCE,community_guidance
 from naver_guard import NaverGuard
 from writing_quality import disclose,review,DISCLOSURES,required_instagram_story,caption_facts
 from tones import TONES
@@ -127,6 +128,24 @@ def get_draft(did):
         raise Problem("초안을 찾을 수 없어요.", 404)
     return migrate(json.loads(row["data"]))
 
+def draft_summary(row):
+    """Small library cards: no full drafts or connection settings in list responses."""
+    data=json.loads(row["data"])
+    channels=[p for p,field in (("naver","blog"),("instagram","instagram"),("tistory","tistory"),("threads","threads")) if str(data.get(field,"")).strip()]
+    if "tistory" not in data and "naver" in channels:channels.insert(channels.index("naver")+1,"tistory")
+    from campaigns import prose_text
+    prose=prose_text(next((data.get(field,"") for field in ("blog","tistory","instagram","threads") if data.get(field)),data.get("prompt","")))
+    excerpt=re.sub(r"\s+"," ",prose).strip()
+    images=data.get("images",[])
+    thumbnail=next((mid for mid in images if isinstance(mid,str) and re.fullmatch(r"[a-f0-9]{32}",mid)),"")
+    place=data.get("selected_place") or {}
+    return {"id":row["id"],"title":data.get("title") or data.get("tistory_title") or excerpt[:54] or "제목 없는 이야기","updated":row["updated"],"excerpt":excerpt[:140],"titles":[data.get(field,"") for field in ("title","tistory_title") if data.get(field)],"platforms":channels,"thumbnail":thumbnail,"photo_count":len(images),"place":place.get("name","") if isinstance(place,dict) else ""}
+
+
+def list_drafts():
+    with db() as c:return [draft_summary(row) for row in c.execute("SELECT id,title,data,updated FROM drafts ORDER BY updated DESC")]
+
+
 def save_draft(body):
     did = body.get("id") or uuid.uuid4().hex
     if not isinstance(did, str) or not re.fullmatch(r"[a-f0-9]{32}", did):
@@ -145,8 +164,9 @@ def save_draft(body):
         extras=read_fields(body)
         place=selected_place(body.get("selected_place"))
         languages=platform_languages(body.get("platform_languages"),language)
+        layouts=layout_settings(body.get("blog_layouts"));layout_bases=layout_text_map(body.get("layout_bases"));layout_last=layout_text_map(body.get("layout_last"))
     except ValueError as error:raise Problem(str(error))
-    clean = {**extras,"selective_generation":body.get("selective_generation") is True,"platform_languages":languages,"tistory":text(body.get("tistory",body.get("blog", "") if not body.get("selective_generation") else ""),30000,"티스토리 본문"),"tistory_title":text(body.get("tistory_title",body.get("title", "") if not body.get("selective_generation") else ""),200,"티스토리 제목"),"selected_place":place,"research":body.get("research") is True,"id": did,"template":template,"language":language,"threads_tone":threads_tone,
+    clean = {**extras,"blog_layouts":layouts,"layout_bases":layout_bases,"layout_last":layout_last,"selective_generation":body.get("selective_generation") is True,"platform_languages":languages,"tistory":text(body.get("tistory",body.get("blog", "") if not body.get("selective_generation") else ""),30000,"티스토리 본문"),"tistory_title":text(body.get("tistory_title",body.get("title", "") if not body.get("selective_generation") else ""),200,"티스토리 제목"),"selected_place":place,"research":body.get("research") is True,"id": did,"template":template,"language":language,"threads_tone":threads_tone,
         "threads":text(body.get("threads",""),500,"Threads 글"),"threads_include_images":body.get("threads_include_images",True) is True,
         "facts_translation":text(body.get("facts_translation",""),4000,"영어 필수 메모"),
         "facts_translation_source":text(body.get("facts_translation_source",""),4000,"필수 메모 원문"), "title": text(body.get("title", ""), 200, "제목"),
@@ -166,11 +186,11 @@ def save_draft(body):
     if len(clean["threads"])>500:raise Problem("광고 안내를 포함하면 Threads 글이 500자를 넘어요. 내용을 줄여 주세요.")
     old_tags=body.get("managed_blog_tags",[])
     if not isinstance(old_tags,list):old_tags=[]
-    clean["managed_blog_tags"]=tags_from(clean["hashtags"])
+    clean["managed_blog_tags"]=publication_tags(clean["hashtags"],languages.get("naver",language))
     if editing in (None,"naver") and clean["blog"].strip():clean["blog"]=apply_tags(clean["blog"],clean["managed_blog_tags"],old_tags)
     old_tistory_tags=body.get("managed_tistory_tags",[])
     if not isinstance(old_tistory_tags,list):old_tistory_tags=[]
-    clean["managed_tistory_tags"]=old_tistory_tags if editing not in (None,"tistory") else tags_from(clean["hashtags"])
+    clean["managed_tistory_tags"]=old_tistory_tags if editing not in (None,"tistory") else publication_tags(clean["hashtags"],languages.get("tistory",language))
     if editing in (None,"tistory") and clean["tistory"].strip():clean["tistory"]=apply_tags(clean["tistory"],clean["managed_tistory_tags"],old_tistory_tags)
     if editing not in (None,"naver"):clean["managed_blog_tags"]=old_tags
     if any(len(clean[field])>30000 for field in ("blog","tistory")):raise Problem("태그를 포함하면 블로그 글이 너무 길어요. 본문을 줄여 주세요.")
@@ -323,7 +343,8 @@ sources([{title,url}]). 검색하지 않았다면 sources는 [].
     instructions += "\n"+BLOG_GUIDANCE+"\n"+THREADS_GUIDANCE+"\n추가 JSON 키: threads(500자 이내), facts_translation(영어 선택 시 필수 메모의 충실한 영어 표현, 한국어면 빈 문자열).\n"+language_guidance(language)+"\n"+threads_tone_guidance(threads_tone,language)
     instructions+="\n"+community_guidance(body)
     if extras["campaign_enabled"]:instructions+="\n"+CAMPAIGN_GUIDANCE
-    instructions+="\n"+PLACE_GUIDANCE
+    from length_control import length_instruction
+    instructions+="\n"+PLACE_GUIDANCE+"\n"+length_instruction(body)
     if place:instructions+="\n선택한 장소의 검색은 별도 단계에서 처리했다. web_search를 다시 실행하지 말고 verified_place_facts만 참고한다."
     payload = {"model": os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
         "instructions": instructions, "input": [{"role": "user", "content": content}],
@@ -395,7 +416,7 @@ sources([{title,url}]). 검색하지 않았다면 sources는 [].
     usage=result.get("usage",{})
     generated["generation"]={"model":payload["model"],"style_pass":polished,"writing_model":writing_model if polished else None,"input_tokens":usage.get("input_tokens",0)+polish_usage.get("input_tokens",0)+place_result["usage"].get("input_tokens",0),
         "output_tokens":usage.get("output_tokens",0)+polish_usage.get("output_tokens",0)+place_result["usage"].get("output_tokens",0),"web_search_calls":place_result["web_search_calls"]+sum(x.get("type")=="web_search_call" for x in result.get("output",[]))}
-    generated["managed_blog_tags"]=tags_from(extras["hashtags"])
+    generated["managed_blog_tags"]=publication_tags(extras["hashtags"],language)
     generated["blog"]=apply_tags(generated["blog"],generated["managed_blog_tags"])
     generated["campaign_checks"]=mission_checks({**body,**generated,"images":ids})
     generated["checks"]=review({**body,**generated,"images":ids})
@@ -668,7 +689,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send((MEDIA / name).read_bytes(), content_type="image/jpeg"); return
             if self.headers.get("Host") not in HOSTS:
                 raise Problem("이 앱은 이 컴퓨터에서만 열 수 있어요.", 403)
-            if path in ("/", "/app.js", "/style.css"):
+            if path in ("/", "/app.js", "/style.css", "/theme.js"):
                 filename = "index.html" if path == "/" else path[1:]
                 data = (ROOT / "static" / filename).read_bytes().replace(b"__STUDIO_TOKEN__", TOKEN.encode())
                 self.send(data, content_type=mimetypes.guess_type(filename)[0] + "; charset=utf-8")
@@ -683,8 +704,7 @@ class Handler(BaseHTTPRequestHandler):
                     "instagram":instagram_configuration()["ready"],
                     "threads":threads_service().configuration()["ready"],"threads_details":threads_service().configuration(),"instagram_details":instagram_configuration(),"naver_guard":NAVER_GUARD.status(),"model":os.environ.get("OPENAI_MODEL","gpt-5.4-mini"),"place_model":os.environ.get("OPENAI_PLACE_MODEL") or "gpt-5.4-nano"})
             elif path == "/api/drafts":
-                with db() as c:
-                    self.send([dict(r) for r in c.execute("SELECT id,title,updated FROM drafts ORDER BY updated DESC")])
+                self.send(list_drafts())
             elif path.startswith("/api/drafts/"):
                 self.send(get_draft(path.split("/")[-1]))
             elif path.startswith("/api/jobs/"):
@@ -754,6 +774,16 @@ class Handler(BaseHTTPRequestHandler):
                     try:return search_places(body.get("query"),remote)
                     except PlaceError as error:raise Problem(str(error))
                 result=start_job(find_places)
+            elif self.path == "/api/blog/layout":
+                try:
+                    option=layout_settings({"naver":body.get("settings")})["naver"]
+                    language=body.get("language","ko")
+                    if language not in ("ko","en"):raise ValueError("작성 언어를 확인해 주세요.")
+                    result={"body":reflow(text(body.get("body",""),30000,"블로그 원고"),option,language),"settings":option}
+                except ValueError as error:raise Problem(str(error))
+            elif self.path == "/api/blog/expand":
+                from platform_writing import generate_selected
+                result=start_job(lambda progress:generate_selected(body,progress,sys.modules[__name__],revision=True),with_progress=True)
             elif self.path == "/api/generate":
                 result = start_job(lambda progress: generate(body,progress),with_progress=True)
             elif self.path == "/api/naver/unblock":

@@ -90,7 +90,8 @@ Return only JSON with title, blog, instagram, threads, facts_translation. Title 
     instructions+="\n"+community_guidance(request)
     if request.get("campaign_enabled"):instructions+="\n"+CAMPAIGN_GUIDANCE
     from places import PLACE_GUIDANCE
-    instructions+="\n"+PLACE_GUIDANCE
+    from length_control import length_instruction
+    instructions+="\n"+PLACE_GUIDANCE+"\n"+length_instruction(request)
     context={"selected_place":request.get("selected_place"),"verified_place_facts":request.get("verified_place_facts",[]),**writing_context(request),"language":request.get("language","ko"),"memo":request.get("prompt",""),"confirmed_facts":request.get("facts",""),"tone":request.get("tone",""),"writing_sample":request.get("style",""),"photo_notes":photo_notes(request.get("prompt",""),count),"photo_count":count,"draft":{"title":draft["title"],"blog":draft["blog"],"instagram":draft.get("instagram",""),"threads":draft.get("threads",""),"facts_translation":draft.get("facts_translation","")}}
     payload={"model":model,"instructions":instructions,"input":[{"role":"user","content":[{"type":"input_text","text":json.dumps(context,ensure_ascii=False)}]}],"max_output_tokens":4000,"store":False}
     if model.startswith("gpt-5"):payload["reasoning"]={"effort":"low"}

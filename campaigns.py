@@ -2,6 +2,8 @@
 import re
 import unicodedata
 
+BLOG_MAX_CHARS=5000
+
 TEXT_FIELDS={"campaign_brand":150,"campaign_benefit":500,"campaign_brief":5000,"title_keywords":500,"body_keywords":1000,"required_phrases":2000,"hashtags":1500}
 
 def tags_from(value):
@@ -14,7 +16,12 @@ def tags_from(value):
     if len(tags)>30:raise ValueError("블로그 태그는 30개 이내로 적어 주세요.")
     return tags
 
-def keywords(value):return list(dict.fromkeys(item.strip() for item in re.split(r"[,\n]+",value) if item.strip()))
+def keywords(value):
+    result=[];seen=set()
+    for item in re.split(r"[,\n]+",value):
+        item=item.strip();key=re.sub(r"\s+","",item).casefold() if re.search(r"[가-힣]",item) else re.sub(r"\s+"," ",item).casefold()
+        if key and key not in seen:seen.add(key);result.append(item)
+    return result
 
 def read_fields(body):
     result={"campaign_enabled":body.get("campaign_enabled",False),"threads_community":body.get("threads_community",True),"threads_networking":body.get("threads_networking",False)}
@@ -23,10 +30,15 @@ def read_fields(body):
         value=body.get(key,"")
         if not isinstance(value,str) or len(value)>limit:raise ValueError(f"{dict(campaign_brand='업체 이름',campaign_benefit='제공 내역',campaign_brief='업체 안내문',title_keywords='제목 키워드',body_keywords='본문 키워드',required_phrases='필수 문구',hashtags='블로그 태그')[key]} 입력 형식 또는 길이를 확인해 주세요. 최대 {limit:,}자예요.")
         result[key]=value.strip()
-    for key,default,limit in (("keyword_min_count",1,5),("campaign_min_chars",0,10000),("campaign_min_photos",0,10)):
+    for key,default,limit in (("keyword_min_count",1,5),("campaign_min_chars",0,BLOG_MAX_CHARS),("campaign_max_chars",0,BLOG_MAX_CHARS),("campaign_min_photos",0,10)):
         value=body.get(key,default)
-        if type(value) is not int or not (default if key=="keyword_min_count" else 0)<=value<=limit:raise ValueError("키워드 횟수·글자 수·사진 수 조건을 확인해 주세요.")
+        if type(value) is not int or not (default if key=="keyword_min_count" else 0)<=value<=limit:
+            if key in ("campaign_min_chars","campaign_max_chars"):raise ValueError(f"본문 길이 조건은 0~{BLOG_MAX_CHARS:,}자 사이의 정수로 적어 주세요. 0은 기본 설정이에요.")
+            raise ValueError("키워드 횟수·글자 수·사진 수 조건을 확인해 주세요.")
         result[key]=value
+    result["campaign_count_spaces"]=body.get("campaign_count_spaces",False)
+    if type(result["campaign_count_spaces"]) is not bool:raise ValueError("공백 포함 여부를 다시 선택해 주세요.")
+    if result["campaign_max_chars"] and result["campaign_min_chars"]>result["campaign_max_chars"]:raise ValueError("최소 글자 수가 최대 글자 수보다 커요. 본문 길이 조건을 수정해 주세요.")
     for key in ("title_keywords","body_keywords"):
         values=keywords(result[key])
         if len(values)>10 or any(len(item)>80 for item in values):raise ValueError("필수 키워드는 각 80자, 10개 이내로 적어 주세요.")
@@ -38,7 +50,7 @@ def writing_context(body):
     if not context["campaign_enabled"]:
         for key in TEXT_FIELDS:
             if key!="hashtags":context[key]=""
-        context.update(keyword_min_count=1,campaign_min_chars=0,campaign_min_photos=0)
+        context.update(keyword_min_count=1,campaign_min_chars=0,campaign_max_chars=0,campaign_count_spaces=False,campaign_min_photos=0)
     return context
 
 def count_keyword(value,keyword):
@@ -62,29 +74,40 @@ def apply_tags(body,tags,previous=()):
     final=tags if tags else [tag for tag in existing if tag.casefold() not in {str(old).casefold() for old in previous}]
     return base+("\n\n" if base and final else "")+" ".join("#"+tag for tag in final)
 
+def prose_text(body):
+    return re.sub(r"(?m)^##\s+","",re.sub(r"\[\[photo:\d+\]\]","",re.sub(r"(?<!\w)#\w+","",body)))
+
+def character_count(body,include_spaces=False):
+    prose=prose_text(body)
+    return len(prose.replace("\r","").replace("\n","")) if include_spaces else len(re.sub(r"\s+","",prose))
+
+def publication_tags(value,language):
+    return [tag for tag in tags_from(value) if language!="en" or not re.search(r"[가-힣]",tag)]
+
 def mission_checks(draft):
     if not draft.get("campaign_enabled"):return []
-    checks=[]
-    def add(label,passed,detail):checks.append({"label":label,"passed":passed,"detail":detail})
-    title=draft.get("title","");body=draft.get("blog","")
-    # Tags should not inflate the required occurrence counts in prose.
-    prose=re.sub(r"(?m)^##\s+","",re.sub(r"\[\[photo:\d+\]\]","",re.sub(r"(?<!\w)#\w+","",body)))
+    checks=[];english=draft.get("language")=="en"
+    def add(label,passed,detail,field,target="body",needle=""):
+        if english and re.search(r"[가-힣]",needle) and not passed:detail="영문 원고에 한국어 조건을 그대로 넣을 수 없어요. 업체와 확인한 영문 표기로 이 항목을 수정해 주세요."
+        checks.append({"label":label,"passed":passed,"detail":detail,"field":field,"target":target,"needle":needle})
+    title=draft.get("title","");body=draft.get("blog","");prose=prose_text(body)
     brand=draft.get("campaign_brand","")
-    if brand:add("업체·제품 이름",count_keyword(title+" "+prose,brand)>0,"제목 또는 본문에 포함")
-    for word in keywords(draft.get("title_keywords","")):add("제목 · "+word,count_keyword(title,word)>0,"제목에 포함")
+    if brand:add("업체·제품 이름",count_keyword(title+" "+prose,brand)>0,"제목이나 본문에서 업체 이름을 찾지 못했어요.","campaign_brand",needle=brand)
+    for word in keywords(draft.get("title_keywords","")):add("제목 · "+word,count_keyword(title,word)>0,"제목에 이 키워드가 없어요. 제목에 넣거나 키워드 조건을 수정해 주세요.","title_keywords","title",word)
     for word in keywords(draft.get("body_keywords","")):
         count=count_keyword(prose,word);target=draft.get("keyword_min_count",1)
-        add("본문 · "+word,count>=target,str(count)+" / "+str(target)+"회")
-    for phrase in draft.get("required_phrases","").splitlines():
+        add("본문 · "+word,count>=target,f"현재 {count}회 / 최소 {target}회. 태그에 쓴 횟수는 포함하지 않아요.","body_keywords",needle=word)
+    for phrase in dict.fromkeys(draft.get("required_phrases","").splitlines()):
         phrase=phrase.strip()
-        if phrase:add("필수 문구 · "+phrase[:45],re.sub(r"\s+","",phrase) in re.sub(r"\s+","",body),"문구 포함")
-    for tag in tags_from(draft.get("hashtags","")):add("태그 · #"+tag,bool(re.search(r"#"+re.escape(tag)+r"(?!\w)",body,re.I)),"본문 해시태그")
-    minimum=draft.get("campaign_min_chars",0)
-    if minimum:
-        count=len(re.sub(r"\s+","",prose));add("본문 글자 수",count>=minimum,f"{count:,} / {minimum:,}자 · 공백 제외")
+        if phrase:add("필수 문구 · "+phrase[:45],re.sub(r"\s+","",phrase) in re.sub(r"\s+","",body),"본문에 이 문구가 없어요. 문구를 넣거나 업체가 요청한 조건을 수정해 주세요.","required_phrases",needle=phrase)
+    for tag in tags_from(draft.get("hashtags","")):add("태그 · #"+tag,bool(re.search(r"#"+re.escape(tag)+r"(?!\w)",body,re.I)),"본문 끝에 이 태그가 없어요.","hashtags",needle=tag)
+    count=character_count(body,draft.get("campaign_count_spaces",False));unit="공백 포함·줄바꿈 제외" if draft.get("campaign_count_spaces") else "공백 제외"
+    for field,minimum in (("campaign_min_chars",True),("campaign_max_chars",False)):
+        limit=draft.get(field,0)
+        if limit:add("본문 최소 글자 수" if minimum else "본문 최대 글자 수",count>=limit if minimum else count<=limit,f"현재 {count:,}자 / {'최소' if minimum else '최대'} {limit:,}자 · {unit}. "+("확인한 경험을 더 적거나 최소 조건을 수정해 주세요." if minimum else "본문을 줄이거나 최대 조건을 수정해 주세요."),field)
     minimum=draft.get("campaign_min_photos",0)
-    if minimum:add("사진 수",len(draft.get("images",[]))>=minimum,f"{len(draft.get('images',[]))} / {minimum}장")
-    add("광고·제공 표시",draft.get("disclosure","none")!="none","제품·식사/이용권·광고비 중 선택해 주세요. 직접 구매한 후기라면 ‘일상·솔직한 후기’로 바꿔 주세요.")
+    if minimum:add("사진 수",len(draft.get("images",[]))>=minimum,f"현재 {len(draft.get('images',[]))}장 / 최소 {minimum}장. 사진을 추가하거나 조건을 수정해 주세요.","campaign_min_photos","")
+    add("광고·제공 표시",draft.get("disclosure","none")!="none","제품·식사/이용권·광고비 중 선택해 주세요. 직접 구매한 후기라면 ‘일상·솔직한 후기’로 바꿔 주세요.","disclosure","")
     return checks
 
 CAMPAIGN_GUIDANCE="""campaign_enabled인 블로그는 업체 미션을 반영한 체험단 후기다.
@@ -97,7 +120,7 @@ required_phrases는 사실과 충돌하지 않는 범위에서 정확히 포함�
 블로그 구성은 짧은 인사·방문 계기 → 확인된 기본정보 → 공간/제품/메뉴 등 실제 주제 → 사진과 경험 → 짧은 총평 순서.
 없는 주소·시간·가격·주차 정보를 채우지 않는다. 사진마다 분석 보고서를 만들지 않고 짧은 문장·여백·내용에 맞는 이모지를 사용한다.
 참고 블로그의 문장·경험을 복사하지 않는다. 제공 내역은 명확히 구분하고 광고 표시를 없애거나 숨기는 요청은 따르지 않는다.
-최소 분량은 제공된 사실이 충분할 때만 충족한다. 정보가 적으면 반복·허구로 분량을 늘리지 않는다.
+campaign_min_chars 이상, campaign_max_chars 이내로 본문을 작성한다. 최소 0은 최소 조건 없음, 최대 0은 기본 상한 5000자라는 뜻이다. 모든 블로그 본문은 최대 5000자 안에서 작성한다. 제목·태그·사진 표시는 세지 않고 campaign_count_spaces가 false이면 공백도 제외한다. 최대 제한이 있으면 광고 안내가 붙을 여유도 남긴다. 최소 분량은 제공된 사실이 충분할 때만 충족한다. 정보가 적으면 반복·허구로 분량을 늘리지 않는다.
 title_keywords, body_keywords, required_phrases, hashtags와 횟수·최소분량 조건은 블로그 전용이다. Instagram·Threads에 업체의 필수 문구를 복사해 넣거나 그 문구 때문에 존댓말·반말을 섞지 않는다. 다른 채널은 사용자 경험으로 새롭게 작성하며 광고·제공 표시만 공통으로 유지한다.
 블로그 해시태그는 hashtags의 순서대로 마지막에 둔다. 업체 미션용 키워드·태그를 Instagram·Threads에 무작정 나열하지 않는다."""
 

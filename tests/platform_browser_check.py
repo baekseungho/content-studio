@@ -57,6 +57,7 @@ with tempfile.TemporaryDirectory(prefix="mellow-platform-browser-") as directory
             count=len(requests);page.locator("#instaTab").click();expect(page.locator("#modal")).to_be_hidden();assert len(requests)==count
             page.locator("#save").click();expect(page.locator("#saveState")).to_have_text("저장 완료")
             page.locator("#tistoryTab").click()
+            page.locator("#resultTools").evaluate("el=>el.open=true")
             with page.expect_download() as downloaded:page.locator("#export").click()
             downloaded_html=Path(downloaded.value.path()).read_text(encoding="utf-8")
             assert tistory in downloaded_html and naver not in downloaded_html
