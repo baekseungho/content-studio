@@ -4,7 +4,7 @@ import unicodedata
 
 BLOG_MAX_CHARS=5000
 
-TEXT_FIELDS={"campaign_brand":150,"campaign_benefit":500,"campaign_brief":5000,"title_keywords":500,"body_keywords":1000,"required_phrases":2000,"hashtags":1500}
+TEXT_FIELDS={"campaign_brand":150,"campaign_benefit":500,"campaign_brief":5000,"title_keywords":500,"body_keywords":1000,"required_phrases":2000,"hashtags":1500,"campaign_forbidden":2000}
 
 def tags_from(value):
     tags=[]
@@ -23,12 +23,12 @@ def keywords(value):
         if key and key not in seen:seen.add(key);result.append(item)
     return result
 
-def read_fields(body):
+def read_fields(body,*,allow_conflicts=False):
     result={"campaign_enabled":body.get("campaign_enabled",False),"threads_community":body.get("threads_community",True),"threads_networking":body.get("threads_networking",False)}
     if any(type(value) is not bool for value in result.values()):raise ValueError("작성 옵션을 다시 선택해 주세요.")
     for key,limit in TEXT_FIELDS.items():
         value=body.get(key,"")
-        if not isinstance(value,str) or len(value)>limit:raise ValueError(f"{dict(campaign_brand='업체 이름',campaign_benefit='제공 내역',campaign_brief='업체 안내문',title_keywords='제목 키워드',body_keywords='본문 키워드',required_phrases='필수 문구',hashtags='블로그 태그')[key]} 입력 형식 또는 길이를 확인해 주세요. 최대 {limit:,}자예요.")
+        if not isinstance(value,str) or len(value)>limit:raise ValueError(f"{dict(campaign_brand='업체 이름',campaign_benefit='제공 내역',campaign_brief='업체 안내문',title_keywords='제목 키워드',body_keywords='본문 키워드',required_phrases='필수 문구',hashtags='블로그 태그',campaign_forbidden='사용하지 않을 표현')[key]} 입력 형식 또는 길이를 확인해 주세요. 최대 {limit:,}자예요.")
         result[key]=value.strip()
     for key,default,limit in (("keyword_min_count",1,5),("campaign_min_chars",0,BLOG_MAX_CHARS),("campaign_max_chars",0,BLOG_MAX_CHARS),("campaign_min_photos",0,10)):
         value=body.get(key,default)
@@ -38,7 +38,7 @@ def read_fields(body):
         result[key]=value
     result["campaign_count_spaces"]=body.get("campaign_count_spaces",False)
     if type(result["campaign_count_spaces"]) is not bool:raise ValueError("공백 포함 여부를 다시 선택해 주세요.")
-    if result["campaign_max_chars"] and result["campaign_min_chars"]>result["campaign_max_chars"]:raise ValueError("최소 글자 수가 최대 글자 수보다 커요. 본문 길이 조건을 수정해 주세요.")
+    if not allow_conflicts and result["campaign_max_chars"] and result["campaign_min_chars"]>result["campaign_max_chars"]:raise ValueError("최소 글자 수가 최대 글자 수보다 커요. 본문 길이 조건을 수정해 주세요.")
     for key in ("title_keywords","body_keywords"):
         values=keywords(result[key])
         if len(values)>10 or any(len(item)>80 for item in values):raise ValueError("필수 키워드는 각 80자, 10개 이내로 적어 주세요.")
@@ -46,7 +46,12 @@ def read_fields(body):
     return result
 
 def writing_context(body):
-    context=read_fields(body)
+    data=body
+    if not body.get("campaign_enabled"):
+        data={**body,**{key:"" for key in TEXT_FIELDS if key!="hashtags"},"keyword_min_count":1,"campaign_min_chars":0,"campaign_max_chars":0,"campaign_count_spaces":False,"campaign_min_photos":0}
+    context=read_fields(data)
+    if isinstance(body.get("campaign_brief_review"),dict) and body["campaign_brief_review"].get("hash"):
+        context["campaign_brief"]=""  # Only confirmed structured requirements go to the model.
     if not context["campaign_enabled"]:
         for key in TEXT_FIELDS:
             if key!="hashtags":context[key]=""
@@ -92,7 +97,7 @@ def mission_checks(draft):
         checks.append({"label":label,"passed":passed,"detail":detail,"field":field,"target":target,"needle":needle})
     title=draft.get("title","");body=draft.get("blog","");prose=prose_text(body)
     brand=draft.get("campaign_brand","")
-    if brand:add("업체·제품 이름",count_keyword(title+" "+prose,brand)>0,"제목이나 본문에서 업체 이름을 찾지 못했어요.","campaign_brand",needle=brand)
+    if brand:add("업체·제품 이름",count_keyword(title+" "+prose,brand)>0,"제목이나 본문에서 업체 이름을 찾지 못했어요.","campaign_brand","title" if count_keyword(title,brand)>0 else "body",needle=brand)
     for word in keywords(draft.get("title_keywords","")):add("제목 · "+word,count_keyword(title,word)>0,"제목에 이 키워드가 없어요. 제목에 넣거나 키워드 조건을 수정해 주세요.","title_keywords","title",word)
     for word in keywords(draft.get("body_keywords","")):
         count=count_keyword(prose,word);target=draft.get("keyword_min_count",1)
@@ -108,6 +113,12 @@ def mission_checks(draft):
     minimum=draft.get("campaign_min_photos",0)
     if minimum:add("사진 수",len(draft.get("images",[]))>=minimum,f"현재 {len(draft.get('images',[]))}장 / 최소 {minimum}장. 사진을 추가하거나 조건을 수정해 주세요.","campaign_min_photos","")
     add("광고·제공 표시",draft.get("disclosure","none")!="none","제품·식사/이용권·광고비 중 선택해 주세요. 직접 구매한 후기라면 ‘일상·솔직한 후기’로 바꿔 주세요.","disclosure","")
+    for word in keywords(draft.get("campaign_forbidden","")):
+        in_title=count_keyword(title,word)>0;found=in_title or count_keyword(prose,word)>0
+        add("사용하지 않을 표현 · "+word,not found,"원고에 이 표현이 있어요. 해당 문장을 고치거나 업체와 확인한 조건을 수정해 주세요.","campaign_forbidden","title" if in_title else "body",word)
+    from campaign_requirements import preflight
+    for issue in preflight(draft):
+        if issue["level"]=="error":add("조건 확인",False,issue["message"],issue["field"],"")
     return checks
 
 CAMPAIGN_GUIDANCE="""campaign_enabled인 블로그는 업체 미션을 반영한 체험단 후기다.
@@ -123,6 +134,8 @@ required_phrases는 사실과 충돌하지 않는 범위에서 정확히 포함�
 campaign_min_chars 이상, campaign_max_chars 이내로 본문을 작성한다. 최소 0은 최소 조건 없음, 최대 0은 기본 상한 5000자라는 뜻이다. 모든 블로그 본문은 최대 5000자 안에서 작성한다. 제목·태그·사진 표시는 세지 않고 campaign_count_spaces가 false이면 공백도 제외한다. 최대 제한이 있으면 광고 안내가 붙을 여유도 남긴다. 최소 분량은 제공된 사실이 충분할 때만 충족한다. 정보가 적으면 반복·허구로 분량을 늘리지 않는다.
 title_keywords, body_keywords, required_phrases, hashtags와 횟수·최소분량 조건은 블로그 전용이다. Instagram·Threads에 업체의 필수 문구를 복사해 넣거나 그 문구 때문에 존댓말·반말을 섞지 않는다. 다른 채널은 사용자 경험으로 새롭게 작성하며 광고·제공 표시만 공통으로 유지한다.
 블로그 해시태그는 hashtags의 순서대로 마지막에 둔다. 업체 미션용 키워드·태그를 Instagram·Threads에 무작정 나열하지 않는다."""
+
+CAMPAIGN_GUIDANCE+="\n반드시 지킬 업체 조건은 구조화된 입력 필드만 사용한다. 안내문이나 업체 메모에서 미확정 조건을 새로 만들지 않는다. campaign_forbidden에 있는 표현은 제목·본문에 쓰지 않는다. 금지 표현을 피해 실제 경험을 과장하거나 의미를 바꾸지 않는다. 직접 확인 항목은 원고 밖에서 사용자가 확인하며 확인했다고 지어내지 않는다."
 
 def community_guidance(request):
     use=request.get("threads_community",True);invite=request.get("threads_networking",False)

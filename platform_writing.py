@@ -12,9 +12,12 @@ from campaigns import writing_context,CAMPAIGN_GUIDANCE,community_guidance,tags_
 from channel_writing import THREADS_GUIDANCE,language_guidance,threads_tone_guidance
 from places import selected_place,research_place,PLACE_GUIDANCE,source_urls
 from tones import TONES
+from voice_profiles import instruction as voice_instruction,profiles as read_voices
 from writing_style import BLOG_GUIDANCE,LIVELY_TONES,mobile_lines,photo_notes
 from writing_quality import disclose,required_instagram_story,caption_facts,review,DISCLOSURES
 from photo_layout import photo_layout
+from story_document import view as document_view
+from channel_media import view as media_view
 from content_rules import clean_blog
 
 PLATFORMS={"naver":("title","blog"),"instagram":("instagram",),"tistory":("tistory_title","tistory"),"threads":("threads",)}
@@ -47,6 +50,8 @@ def view(draft,platform):
     result={**draft}
     if platform=="tistory":
         result.update(blog=draft.get("tistory",draft.get("blog","")),title=draft.get("tistory_title",draft.get("title","")))
+    result=document_view(result,platform)
+    result=media_view(result,platform)
     result["language"]=draft.get("platform_languages",{}).get(platform,draft.get("language","ko"))
     return result
 
@@ -74,6 +79,7 @@ Do not put source URLs, citations or markdown links in the prose. Keep writing p
     if polish:guide+="\nEdit only the supplied requested drafts for a natural, specific voice. No images are being sent in this step: keep observations grounded in the draft and confirmed notes. Preserve every photo marker in each blog in exact order. Never add new facts. Remove any taste, texture, view, physical reaction or plan not actually supplied in the notes; even if it appears in the draft. Keep English conversational rather than translated."
     if language=="en":guide+="\nFINAL ENGLISH RULE: Every title, prose field and facts_translation must be fully English, including headings. Use a supplied English business name or consistent romanization. Do not insert Korean mission keywords, exact Korean phrases or Korean hashtags into English prose: leave those requirements for the app to flag for review instead. Do not copy any previous Korean draft. Sound like casually telling a friend about the actual experience; don't present a polished report. Prefer 'I liked the cream on this one' over 'The cream offered a delightful experience'. Keep it warm and unforced; no invented reaction or stock filler. For 고소한 cream or coffee, convey a nutty, mellow or rich taste in context, never savory or salty unless the notes explicitly say that. Do not invent nuts as an ingredient. Let concrete details stand on their own rather than ending with generic filler like 'It was a nice, simple coffee break'. No stiff 'delightful experience', 'offered', 'provided a sense of' or review-summary voice. Use contractions and an easy, lightly personal cadence without forced enthusiasm. Render facts_translation in the same relaxed voice as the caption, not a flat literal-translation voice; e.g. 'The cream on top had this nice, nutty taste' only when it matches the notes. Do not invent a favorite, 'the part I liked most' or 'made it more memorable' from a simple positive note. End on the actual detail instead of adding a summary reaction."
     if any(p in BLOG_FIELDS for p in platforms):guide+="\n"+length_instruction(request)
+    guide+=voice_instruction(request.get("voice_styles"),platforms)
     guide+="\nFINAL OUTPUT: Return ONLY "+json.dumps(keys)+". Ignore any unrequested-channel examples above. Limits: "+json.dumps({key:LIMITS[key] for key in keys})
     return guide
 
@@ -109,8 +115,37 @@ def _research(place,purpose,api,reuse):
     return {**result,"cache_hit":False}
 
 def generate_selected(body,progress,api,revision=False):
+    api.ensure_campaign_request(body)
+    if "channel_images" in body:
+        try:
+            platforms=selection(body.get("platforms"));mapping=body["channel_images"]
+            if not isinstance(mapping,dict) or any(p not in platforms or p not in ("instagram","threads") for p in mapping):raise ValueError("선택한 SNS의 사진만 준비해 주세요.")
+            from channel_media import ids as unique_images
+            chosen={p:api.image_ids(unique_images(value)) for p,value in mapping.items()}
+            base=api.image_ids(body.get("images",[]));groups={}
+            for p in platforms:groups.setdefault(tuple(chosen.get(p,base)),[]).append(p)
+        except ValueError as error:raise api.Problem(str(error))
+        clean={k:v for k,v in body.items() if k!="channel_images"}
+        if len(groups)==1:body={**clean,"images":list(next(iter(groups)))}
+        else:
+            results=[]
+            for index,(images,channels) in enumerate(groups.items()):
+                def scoped(message,stage=None):progress(f"{index+1}/{len(groups)} · "+message,stage)
+                results.append(generate_selected({**clean,"platforms":channels,"images":list(images)},scoped,api,revision))
+            combined={"selective_generation":True,"generated_platforms":platforms,"checks":[],"sources":[],"layout_bases":{},"layout_last":{},"length_status":[],"needs_more_notes":False,"needs_length_revision":False}
+            for result in results:
+                for field in fields_for(result["generated_platforms"],body.get("language","ko")):
+                    if field in result:combined[field]=result[field]
+                if "facts_translation_source" in result:combined["facts_translation_source"]=result["facts_translation_source"]
+                for field in ("checks","sources","length_status"):combined[field].extend(result[field])
+                for field in ("layout_bases","layout_last"):combined[field].update(result[field])
+                for field in ("needs_more_notes","needs_length_revision"):combined[field]|=result[field]
+            combined["generation"]={**results[0]["generation"],"platforms":platforms,"photo_groups":len(groups)}
+            for field in ("input_tokens","output_tokens","web_search_calls"):combined["generation"][field]=sum(result["generation"][field] for result in results)
+            return combined
     try:
-        layouts=layout_settings(body.get("blog_layouts"));platforms=selection(body.get("platforms"));place=selected_place(body.get("selected_place"));extras=writing_context(body)
+        read_voices(body.get("voice_styles"));layouts=layout_settings(body.get("blog_layouts"));platforms=selection(body.get("platforms"));place=selected_place(body.get("selected_place"));extras=writing_context(body if any(p in ("naver","tistory") for p in platforms) else {**body,"campaign_enabled":False})
+        if not any(p in ("naver","tistory") for p in platforms) and body.get("campaign_enabled"):extras["campaign_brand"]=api.text(body.get("campaign_brand",""),150,"업체 이름")
     except ValueError as error:raise api.Problem(str(error))
     if revision and (len(platforms)!=1 or platforms[0] not in ("naver","tistory")):raise api.Problem("블로그 원고 한 곳만 선택해 주세요.")
     key=os.environ.get("OPENAI_API_KEY","")

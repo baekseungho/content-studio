@@ -6,7 +6,9 @@ import sqlite3
 import time
 import uuid
 from urllib.parse import urlsplit
+from story_library import record_publish
 from publish_media import prepare_photo
+from channel_media import view as channel_view,prepare as prepare_channel_photo
 from writing_quality import publication_errors
 
 SCHEMA="""
@@ -59,7 +61,7 @@ class ThreadsPublisher:
    progress('Threads에서 사진을 처리하고 있어요. 잠시만 기다려 주세요.')
    time.sleep(min(interval,max(0,deadline-time.monotonic())));interval=min(60,interval*2)
  def publish(self,did,progress=lambda message:None,with_images=True):
-  draft=self.get_draft(did);config=self.configuration()
+  draft=channel_view(self.get_draft(did),"threads");config=self.configuration()
   if not config['ready']:raise self.problem('Threads 계정을 먼저 연결해 주세요.',409)
   text=draft.get('threads','').strip()
   if not text or len(text)>500:raise self.problem('Threads 본문을 1~500자로 준비해 주세요.')
@@ -75,7 +77,9 @@ class ThreadsPublisher:
   aid=uuid.uuid4().hex
   with self.db() as db:
    db.executescript(SCHEMA)
-   try:db.execute('INSERT INTO threads_attempts VALUES(?,?,?,?,?)',(aid,did,'publishing','{}',time.time()))
+   try:
+    db.execute('INSERT INTO threads_attempts VALUES(?,?,?,?,?)',(aid,did,'publishing','{}',time.time()))
+    record_publish(db,aid,{**draft,'threads_include_images':bool(images)},'threads')
    except sqlite3.IntegrityError:raise self.problem('이미 Threads에 발행했거나 결과 확인이 필요한 글이에요. 올린 글에서 기록을 확인해 주세요.',409)
   publish_started=False;container=None
   user=os.environ['THREADS_USER_ID'].strip()
@@ -88,9 +92,12 @@ class ThreadsPublisher:
     children=[]
     for index,mid in enumerate(images):
      progress('사진 '+str(index+1)+'/'+str(len(images))+'장을 Threads에 전달하고 있어요.')
-     prepare_photo(self.media,mid)
-     if self.tunnel.active():self.tunnel.allow(mid)
-     payload={'media_type':'IMAGE','image_url':self.media_base().rstrip('/')+'/media/'+mid+'-ig.jpg'}
+     settings=draft.get('channel_media',{}).get('threads')
+     prepared=prepare_channel_photo(self.media,mid,settings,'threads') if settings else prepare_photo(self.media,mid)
+     if self.tunnel.active():
+      if settings:self.tunnel.allow_variant(prepared.name)
+      else:self.tunnel.allow(mid)
+     payload={'media_type':'IMAGE','image_url':self.media_base().rstrip('/')+'/media/'+prepared.name}
      if len(images)>1:payload['is_carousel_item']=True
      else:payload['text']=text
      cid=self.graph(user+'/threads',payload).get('id')

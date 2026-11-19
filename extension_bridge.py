@@ -15,7 +15,8 @@ class HandoffError(Exception):
         self.message,self.status=message,status
 
 class ExtensionBridge:
-    def __init__(self,media,guard,channel="naver"):
+    def __init__(self,media,guard,channel="naver",record_report=None):
+        self.record_report=record_report
         self.channel=channel
         self.media=media
         self.guard=guard
@@ -82,7 +83,8 @@ class ExtensionBridge:
             del self.tickets[code]
             token=secrets.token_urlsafe(32)
             expected=len(draft["images"])
-            self.reports[token]={"id":draft["id"],"photos":expected,"expires":time.time()+600}
+            from story_library import fingerprint
+            self.reports[token]={"id":draft["id"],"photos":expected,"expires":time.time()+600,"fingerprint":fingerprint(draft,self.channel)}
             return {"title":draft["title"],"body":clean_blog(draft["blog"]),
                 "photos":photos,
                 "report_token":token,"expected_photos":expected,"format":template_for(draft.get("template"))}
@@ -113,6 +115,7 @@ class ExtensionBridge:
                 self.guard.complete(item["id"])
             if state=="blocked":
                 self.guard.block("크롬 확장에서 네이버 보호조치·추가 인증을 감지했습니다.")
+            if self.record_report:self.record_report(token,item,state,count)
             del self.reports[token]
             self.receipts[token]={"state":state,"count":count,"expires":time.time()+600}
             while len(self.receipts)>64:self.receipts.pop(next(iter(self.receipts)))

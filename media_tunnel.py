@@ -31,6 +31,11 @@ class MediaTunnel:
             with self.lock:
                 self.allowed.add(mid)
 
+    def allow_variant(self,name):
+        from channel_media import VARIANT
+        if isinstance(name,str) and VARIANT.fullmatch(name) and (self.media/name).is_file():
+            with self.lock:self.allowed.add(name)
+
     def handler(self):
         owner=self
         class Gateway(BaseHTTPRequestHandler):
@@ -44,11 +49,12 @@ class MediaTunnel:
                 if path=="/health":
                     content=b"media-gateway-ready";status=200
                 else:
-                    match=re.fullmatch(r"/media/([a-f0-9]{32})-ig\.jpg",path)
+                    match=re.fullmatch(r"/media/([a-f0-9]{32})(-ig|-(?:ig|th)-[a-f0-9]{16})\.jpg",path)
                     if match:
                         with owner.lock:
-                            allowed=match[1] in owner.allowed
-                        target=owner.media/(match[1]+"-ig.jpg")
+                            name=match[1]+match[2]+".jpg"
+                            allowed=(match[1] in owner.allowed if match[2]=="-ig" else name in owner.allowed)
+                        target=owner.media/name
                         if allowed and target.is_file():
                             content=target.read_bytes();mime="image/jpeg";status=200
                 content=content if content is not None else b"Not found"

@@ -2,7 +2,7 @@
 import math
 import re
 
-def photo_layout(body,count):
+def photo_layout(body,count,fill_missing=True):
     used=set()
     def marker(match):
         index=int(match[1])
@@ -11,7 +11,7 @@ def photo_layout(body,count):
         used.add(index)
         return "\n\n[[photo:"+str(index)+"]]\n\n"
     body=re.sub(r"\[\[photo:(\d+)\]\]",marker,body).strip()
-    missing=[i for i in range(1,count+1) if i not in used]
+    missing=[i for i in range(1,count+1) if i not in used] if fill_missing else []
     if not missing:
         return re.sub(r"\n{3,}","\n\n",body)
     parts=[part.strip() for part in re.split(r"\n\s*\n",body) if part.strip()]
