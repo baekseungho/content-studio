@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="extension-smoke-") as temp:
                 time.sleep(.2)
         else:
             raise RuntimeError("Test server not ready")
-        token=re.search('name="studio-token" content="([^"]+)"',html)[1]
+        token=re.search(r'<meta(?=[^>]*name="studio-token")(?=[^>]*content="([^"]+)")[^>]*>',html)[1]
         def post(path,body):
             request=urllib.request.Request(base+path,data=json.dumps(body).encode(),
                 headers={"Content-Type":"application/json","X-Studio-Token":token})

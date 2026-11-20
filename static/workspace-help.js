@@ -21,7 +21,7 @@
  function diagnostic(){return JSON.stringify({version:1,stage:workflow.stage,platform:activePlatform(),busy,unsaved:dirty,temporary_copy:recoveryReady,photo_count:Array.isArray(draft.images)?draft.images.length:0,text_chars:typeof draft[contentKey()]==='string'?draft[contentKey()].length:0,connection_error:errorContext?.kind||null,pending_generation:!$('generationRecovery')?.hidden},null,2);}
  function apiError(path,kind){
   // Background previews/searches do not interrupt the user with a global error card.
-  if(!/^\/api\/(status$|drafts(?:\/|$)|generate$|blog\/expand$|jobs\/|publish\/|naver\/|tistory\/)/.test(path))return;
+  if(!/^\/api\/(status$|drafts(?:\/|$)|generate$|blog\/expand$|delivery\/preview$|jobs\/|publish\/|naver\/|tistory\/)/.test(path))return;
   errorContext={kind,publishing:/\/(publish|naver|tistory)\//.test(path)};renderError();
  }
  function renderError(){

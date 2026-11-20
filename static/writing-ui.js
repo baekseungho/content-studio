@@ -41,7 +41,7 @@
    const profile=Object.fromEntries(Object.entries(fields).map(([k,n])=>[k,n.value]));use.disabled=true;
    try{if(remember.checked){if(storeError)throw Error('저장한 설정을 읽지 못했어요. 창을 다시 열어 확인하거나 ‘다음 새 글에도 사용’을 해제해 주세요.');store=await api('/api/voice-profiles',{channel,profile,revision:store.revision});}if(!$('modal').open||!box.isConnected)return;setVoice(channel,profile);$('modal').close();notify(remember.checked?'이 채널의 말투를 기억했어요. 새로 만드는 글부터 적용해요.':'이 글의 말투를 골랐어요. 새로 만드는 글부터 적용해요.');}
    catch(error){note.textContent=error.message;if(error.code==='voice_conflict')await readStore();}finally{use.disabled=false;}
-  },'primary');use.id='useVoice';actions.append(button('취소',()=>$('modal').close(),'secondary'),use);box.append(actions);
+  },'primary');use.id='useVoice';actions.append(button('취소',()=>$('modal').close(),'secondary'),use);box.append(actions);frameModal(box,actions);
  }
  const controls=$('editor').querySelector('.editor-controls');const titleButton=button('✦ 제목 추천',()=>openTarget({kind:'title'},'titles'));titleButton.id='suggestTitles';const snsButton=button('✦ 필요한 부분 다듬기',()=>{const n=$('body'),selected=n.selectionEnd>n.selectionStart;openTarget({kind:'body',start:selected?n.selectionStart:0,end:selected?n.selectionEnd:n.value.length});});snsButton.id='refineCaption';const undo=button('↶ 수정 전으로',()=>{
   const platform=activePlatform(),last=history[platform]?.at(-1);if(busy||!last)return;if(draft[contentKey()]!==last.after){notify('그 뒤에 글이 바뀌었어요. 현재 글을 보호하기 위해 되돌리지 않았어요.');return;}draft[contentKey()]=last.before;$('body').value=last.before;history[platform].pop();markDirty();renderTab();notify('부분 수정 전 글로 되돌렸어요.');
@@ -99,7 +99,7 @@
    else if(target.kind==='title')BlockWorkspace.editor.mutate(()=>{$('title').value=value;draft[titleKey()]=value;});
    else{const before=draft[contentKey()],after=before.slice(0,target.start)+value+before.slice(target.end);history[platform]||=[];history[platform].push({before,after});if(history[platform].length>20)history[platform].shift();draft[contentKey()]=after;$('body').value=after;markDirty();renderTab();}
    if(preview)renderPreview();$('modal').close();refresh();notify('선택한 부분만 바꿨어요. ↶ 되돌리기로 복구할 수 있어요.');
-  },'primary');apply.id='applyRefine';apply.disabled=true;actions.append(button('원문 유지 · 닫기',()=>$('modal').close(),'quiet'),generate,apply);box.append(actions);
+  },'primary');apply.id='applyRefine';apply.disabled=true;actions.append(button('원문 유지 · 닫기',()=>$('modal').close(),'quiet'),generate,apply);box.append(actions);frameModal(box,actions);
   async function validateCandidate(){
    const seq=++s.sequence;s.valid=null;apply.disabled=true;if(!s.request)return;
    feedback.textContent='숫자와 글 조건을 확인하고 있어요.';diffDetails.hidden=true;

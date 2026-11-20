@@ -155,3 +155,29 @@ static/generation-recovery.js는 전체 생성/블로그 분량 보완의 job ID
 복구 원고는 새 id=null 이야기로 사용자가 명시적으로 가져옵니다. 사진은 원본 ID와 채널 선택을 보존하며 블로그 문서를 새로 구성합니다. 요청하지 않은 플랫폼의 응답은 적용하지 않고 수동 미션의 정의는 유지하지만 확인 상태는 비웁니다. 현재 원고는 LibraryUI.leaveGuard로 보호합니다. 정상 적용 후 로컬 원고 복구 사본이 저장된 경우에만 job 참조를 제거하고, quota 실패 시 안내를 유지합니다. 현재 이야기를 실제 보관한 경우에도 참조를 정리합니다. 닫은 모달과 오래된 요청 응답은 현재 작업을 변경할 수 없습니다.
 
 검증: tests/test_recovery_api.py와 tests/recovery_browser_check.py. 기존 8종 브라우저 검사와 전체 unittest 회귀를 함께 실행합니다. 실계정 발행/편집기, 실제 AI 품질, 초심자 사용성 관찰은 별도 검증입니다.
+
+
+## H · 최종 전달 확인과 저장 버전 고정
+
+POST /api/delivery/preview는 인증·id·updated·platform을 검사한 뒤 실제 저장본을 채널 view로 투영합니다. 본문/사진 순서/언어/블로그 template과 대상 주소를 반환하며 사진은 PIL로 실제 디코딩해 누락/손상을 확인합니다. 서버 쓰기·모델·사진 공개·외부 API 없이 검사합니다. ready=false일 때 클라이언트 확인 버튼을 막고 위치와 수정 경로를 제공합니다. 출력은 외부 편집기의 실제 서식 반영 성공을 뜻하지 않습니다.
+
+앱의 handoff 및 SNS 발행 요청은 updated를 포함하며, 현재 저장 버전과 다르면 409 delivery_conflict를 반환합니다. 확인 창이 열린 사이 다른 창에서 수정된 원고를 자동으로 발행하지 않습니다. 구버전/내부 호출의 updated 없는 계약은 유지하지만 작업 시작 시점의 독립 복사본은 동일하게 사용합니다. 서비스 API로 외부 배포할 때는 버전 필드 강제를 별도로 검토해야 합니다.
+
+SNS 라우트는 검증한 저장본을 deep copy해 worker closure에 전달합니다. publish_instagram 및 ThreadsPublisher.publish의 선택적 snapshot은 get_draft 재조회를 대체하고 번호를 검사하며 자체 사본으로 작업합니다. 작업 등록과 실행 사이 저장본이 바뀌어도 확인 원고가 바뀌지 않습니다. 기존 발행 기록/중복 방지/uncertain 정책은 유지합니다. 사진 파일 자체를 복사하거나 계정 OAuth를 고정하는 기능은 아닙니다.
+
+static/delivery-ui.js/css는 기본 SNS confirm을 대체하고 블로그/수동 코드 전달에도 명시적 최종 확인을 제공합니다. 같은 탭의 navigation/edit epoch 및 id/updated를 확인하고 닫기/돌아가기/Esc는 false로 정리합니다. 실제 공개 요청을 취소 후 자동 재시도하지 않습니다. 준비 원고 보관은 확인 창 이전에 진행하므로 취소해도 보관본은 남습니다.
+
+검증: test_delivery_review.py의 13개 로컬/HTTP/실제 발행 함수 mock 검사, delivery_browser_check.py의 4채널·사진 오류·취소·다른 창 변경·모바일 시나리오, 기존 9종 앱 브라우저 검사, extension_smoke_check.py 및 extension_upgrade_flow_check.py의 실제 MV3 로딩과 모의 편집기 입력/기록 복구. 전체 unittest 389개. 실제 플랫폼 게시/서식과 초심자 관찰은 별도 검증입니다.
+
+
+## I · 사용자가 직접 확인한 블로그 발행 주소
+
+publication_records.py의 URL 검사는 네이버 PC/모바일 및 PostView의 blogId/logNo, 티스토리 숫자/entry 경로를 canonical HTTPS 주소로 바꿉니다. 알려진 블로그 주소와 다르면 거절하며 관리/작성/미리보기/비밀 쿼리·자격 증명·포트·다른 도메인·잘못된 인코딩을 차단합니다. 정규화한 주소도 2,048자 이내입니다. DNS/HTTP/AI를 호출하지 않으며 verification은 URL 확인 시 not_fetched, 기록 시 user_confirmed입니다.
+
+POST /api/publications/preview는 주소 형식 검사만 제공합니다. POST /api/publications는 saved id/updated/두 블로그 중 platform/url/confirmed=true를 요구합니다. BEGIN IMMEDIATE 안에서 저장 버전을 확인하고 원고 내용 지문을 기록합니다. (draft_id,platform,url,fingerprint) unique로 동시 확인도 한 기록으로 만들고, 같은 내용의 정리된 주소를 다시 남기면 복구합니다. 실제 원고와 발행/입력 기록은 수정하지 않습니다.
+
+publication_records는 이야기당 정리 기록 포함 100개 한도, revision CAS를 쓰는 기록만 정리/복구, 현재/정리된 주소 조회를 제공합니다. GET /api/publications는 최근 100개를 보여줍니다. story_library는 활성 기록을 채널에 연결하되 current fingerprint와 다르면 changed로 표시하며 사용자 확인과 API 발행 증거를 구분합니다. 읽을 수 없는 원고도 안전한 URL 기록은 남기지만 내용 일치를 추정하지 않습니다. 안전하지 않은 DB 주소는 링크로 노출하지 않습니다.
+
+static/publication-ui.js/css는 저장된 원고에서만 기록 창을 열고, 주소 확인과 명시적 체크 후 저장합니다. 원고/이동/입력 epoch, 요청 순서를 대조해 늦은 검사를 적용하지 않습니다. 기록·정리 후 기존 목록 응답을 무효화하고 다시 조회합니다. 보관함 링크·게시 기록에서 외부 게시물 열기는 사용자가 직접 누를 때만 실행합니다.
+
+검증은 test_publication_records.py와 publication_browser_check.py에서 URL/확인/버전 충돌/중복/동시 요청/기록 정리와 복구/원고 변경/손상/늦은 응답/라이트·다크·모바일을 다룹니다. 전체 기존 로직 및 앱·확장 회귀와 함께 확인하며 실제 공개 게시나 모델 호출은 하지 않습니다.

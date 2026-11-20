@@ -1,0 +1,22 @@
+/* The final confirmation inspects saved content locally; only its primary button permits delivery. */
+(() => {
+ 'use strict';
+ const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+ async function confirmDelivery(platform,withImages=true){
+  const id=draft.id,updated=draft.updated,nav=navigationEpoch,edit=editEpoch;
+  const report=await api('/api/delivery/preview',{id,updated,platform,with_images:withImages,blog_url:platform==='tistory'?$('tistoryUrl').value.trim():''});
+  if(id!==draft.id||updated!==draft.updated||nav!==navigationEpoch||edit!==editEpoch||platform!==activePlatform())throw Error('원고가 바뀌었어요. 현재 글을 다시 확인해 주세요.');
+  const blog=report.effect==='editor',box=modal(blog?'블로그에 옮길 이야기':'공개할 이야기, 마지막 확인');$('modal').dataset.view='delivery';
+  const intro=el('div','delivery-intro');intro.append(el('small','delivery-eyebrow',report.label+' · '+(report.language==='en'?'ENGLISH':'한국어')),el('h3','',blog?'편집기에 이대로 옮길까요?':'연결된 계정에 지금 공개할까요?'),el('p','',report.notice));
+  if(report.target_url){const target=el('p','delivery-target',report.target_url);target.id='deliveryTarget';intro.append(target);}box.append(intro);
+  const summary=el('div','delivery-summary');summary.id='deliverySummary';summary.dataset.kind=report.effect;for(const [label,value] of [['본문',report.text_chars.toLocaleString()+'자'],['사진',report.photos.length+'장'],...(report.format?[['요청 정렬',report.format.align==='center'?'가운데':'왼쪽'],['요청 글꼴',report.format.font+' · '+report.format.size]]:[])]){const item=el('div');item.append(el('small','',label),el('strong','',value));summary.append(item);}box.append(summary);
+  const checks=el('section','delivery-checks');checks.id='deliveryChecks';checks.setAttribute('aria-label','전달 전 확인 결과');if(!report.checks.length)checks.append(el('p','delivery-ok','✓ 글과 선택한 사진을 확인했어요. 계정의 실제 발행 권한은 발행 과정에서 확인해요.'));else for(const issue of report.checks){const row=el('div','delivery-issue');row.dataset.level=issue.level;row.append(el('p','',issue.message));const fix=el('button','text-button','이 부분 수정하기');fix.type='button';fix.onclick=()=>{finish(false);$('modal').close();setTimeout(()=>{if(issue.field==='photos'){goWorkspace(2);if(blog)window.BlockWorkspace?.focus({});else $('chooseChannelPhotos')?.click();}else focusIssue(issue);},0);};row.append(fix);checks.append(row);}box.append(checks);
+  const details=el('details','delivery-preview');details.id='deliveryPreview';details.open=true;details.append(el('summary','','전달할 본문과 사진'));const content=el('div','delivery-text');if(report.title)content.append(el('h3','',report.title));const text=el('p','',report.text.replace(/\[\[photo:(\d+)\]\]/g,(_,n)=>'〔사진 '+n+'〕'));content.append(text);details.append(content);
+  if(report.photos.length){const photos=el('ol','delivery-photos');for(const photo of report.photos){const item=el('li');item.dataset.photoId=photo.id;const frame=el('div','delivery-photo');if(photo.available){const image=el('img');image.src='/api/library/thumb/'+photo.id;image.alt='전달 사진 '+photo.number;image.loading='lazy';image.onerror=()=>{image.remove();frame.textContent='사진을 불러오지 못했어요';};frame.append(image);}else frame.textContent='사진 확인 필요';item.append(frame,el('small','',photo.number+' · '+photo.width+' × '+photo.height));photos.append(item);}details.append(photos,el('p','hint','사진 번호는 위 본문의 위치와 연결돼요. SNS 사진은 나열된 순서로 전달하며 실제 잘림은 채널 사진 미리보기에서 확인해 주세요.'));}box.append(details);
+  const actions=el('div','delivery-actions'),cancel=el('button','secondary','돌아가서 다듬기'),accept=el('button','primary',blog?'확인한 글·사진 옮기기':'확인한 내용 공개 발행');cancel.type=accept.type='button';cancel.id='deliveryCancel';accept.id='deliveryConfirm';accept.disabled=!report.ready;actions.append(cancel,accept);box.append(actions);
+  frameModal(box,actions);box.querySelector('.modal-scroll-region').setAttribute('aria-label','전달할 원고 확인');
+  let finish=()=>{};
+  return new Promise(resolve=>{let settled=false;finish=value=>{if(settled)return;settled=true;resolve(value);};$('modal').addEventListener('close',()=>finish(false),{once:true});cancel.onclick=()=>{$('modal').close();finish(false);};accept.onclick=()=>{if(!report.ready||id!==draft.id||updated!==draft.updated||nav!==navigationEpoch||edit!==editEpoch||platform!==activePlatform())return;finish(true);$('modal').close();};cancel.focus();});
+ }
+ window.DeliveryUI={confirm:confirmDelivery};
+})();

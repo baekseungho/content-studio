@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='mellow-transfer-upgrade-') as folder:
     with urllib.request.urlopen(base) as response:html=response.read().decode('utf-8')
     break
    except Exception:time.sleep(.2)
-  token=re.search('name="studio-token" content="([^"]+)"',html)[1]
+  token=re.search(r'<meta(?=[^>]*name="studio-token")(?=[^>]*content="([^"]+)")[^>]*>',html)[1]
   def post(path,body):
    req=urllib.request.Request(base+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Studio-Token':token})
    with urllib.request.urlopen(req,timeout=10) as response:return json.load(response)
@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='mellow-transfer-upgrade-') as folder:
     wrong=worker.evaluate('message=>runFill(message)',{'tabId':wrong_id,'base':base,'channel':'naver','code':ticket['code']})
     assert not wrong['codeConsumed'] and '다른 글쓰기' in wrong['message'],wrong
     metadata=worker.evaluate("args=>request(args.base,'/api/extension/inspect',{code:args.code})",{'base':base,'code':ticket['code']});assert metadata['writer_url'].startswith('https://blog.naver.com/test_fixture')
-    pages=len(context.pages);app.locator('#publish').click();expect(app.locator('#publish')).to_be_enabled(timeout=60000)
+    pages=len(context.pages);app.evaluate('goWorkspace(3)');app.locator('#publish').click();app.locator('#deliveryConfirm').click();expect(app.locator('#publish')).to_be_enabled(timeout=60000)
     assert len(context.pages)==pages,'A new tab was opened despite one exact blank editor';expect(blog.locator('img.se-image-resource')).to_have_count(1)
     expect(app.locator('#naverDiagnostic')).to_contain_text('기록만 다시');expect(app.get_by_role('button',name='결과 확인·기록 다시 보내기')).to_be_visible()
     state=worker.evaluate("()=>chrome.storage.session.get(['pendingReports','activeTransfer'])");assert len(state['pendingReports'])==1 and not state.get('activeTransfer')
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='mellow-transfer-upgrade-') as folder:
     guard['attempts']=[stamp-61 for stamp in guard['attempts']];(data/'naver-guard.json').write_text(json.dumps(guard),encoding='utf-8')
     second=create('기록 응답만 유실된 경우');app.evaluate('async did=>{draft=await api("/api/drafts/"+did);loadDraft();}',second['id'])
     second_blog=context.new_page();second_blog.goto('https://blog.naver.com/test_fixture?Redirect=Write&');worker.evaluate("()=>{self.reportMode='after';self.reportFailures=1;}")
-    pages=len(context.pages);app.locator('#publish').click();expect(app.locator('#publish')).to_be_enabled(timeout=60000);assert len(context.pages)==pages
+    pages=len(context.pages);app.evaluate('goWorkspace(3)');app.locator('#publish').click();app.locator('#deliveryConfirm').click();expect(app.locator('#publish')).to_be_enabled(timeout=60000);assert len(context.pages)==pages
     expect(second_blog.locator('img.se-image-resource')).to_have_count(1);expect(app.locator('#workflow')).to_have_attribute('data-state','ready')
     assert worker.evaluate("async()=>(await chrome.storage.session.get('pendingReports')).pendingReports.length")==0
     assert blog.locator('.se-section-text').all_inner_texts()==before;expect(untouched.locator('.se-section-documentTitle')).to_have_text('건드리면 안 되는 다른 블로그')
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='mellow-transfer-upgrade-') as folder:
     # Tistory uses its own blank tab and can repair formatting without inserting content again.
     app.locator('#tistoryTab').click();app.locator('#tistoryUrl').evaluate("el=>{el.value='https://my-blog.tistory.com';el.dispatchEvent(new Event('input'));}")
     tistory=context.new_page();tistory.goto('https://my-blog.tistory.com/manage/newpost/');pages=len(context.pages)
-    app.locator('#publish').click();expect(app.locator('#publish')).to_be_enabled(timeout=60000);assert len(context.pages)==pages;expect(tistory.locator('#content img')).to_have_count(1)
+    app.evaluate('goWorkspace(3)');app.locator('#publish').click();app.locator('#deliveryConfirm').click();expect(app.locator('#publish')).to_be_enabled(timeout=60000);assert len(context.pages)==pages;expect(tistory.locator('#content img')).to_have_count(1)
     snapshot=tistory.locator('#content').text_content();tistory.locator('#content p').first.evaluate("el=>{el.style.textAlign='left';el.style.fontFamily='Arial';el.style.fontSize='11px';}")
     tistory_id=worker.evaluate("async()=>(await chrome.tabs.query({url:'https://my-blog.tistory.com/*'}))[0].id")
     result=worker.evaluate('id=>formatOnly(id)',tistory_id);assert result['ok'],result;assert tistory.locator('#content').text_content()==snapshot;expect(tistory.locator('#content img')).to_have_count(1)

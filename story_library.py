@@ -1,5 +1,6 @@
 """Honest library states and explicit per-revision review; never publish from here."""
 import hashlib,json,math,re,sqlite3,time
+import publication_records
 
 CHANNELS={"naver":"blog","tistory":"tistory","instagram":"instagram","threads":"threads"}
 SCHEMA="""
@@ -111,17 +112,21 @@ def _attempts(conn):
  return result
 
 
-def channel_states(draft,reviews,attempts,handoffs,legacy=()):
+def channel_states(draft,reviews,attempts,handoffs,legacy=(),publications=None):
  from platform_writing import migrate,view
- draft=migrate(dict(draft));selected=draft.get('selected_platforms',[]);states={}
+ draft=migrate(dict(draft));selected=draft.get('selected_platforms',[]);states={};publications=publications or {}
+ def attach(state,record,same):
+  state.update(state='published' if same else 'changed',label='발행 확인 · 직접 기록' if same else '이전 원고 발행 · 직접 기록',published_url=record['url'],record_id=record['id'],record_revision=record['revision'],recorded_at=record['created'],verification='user_confirmed')
  for platform,field in CHANNELS.items():
   has=bool(str(draft.get(field,'')).strip())
-  if not has and platform not in selected and platform not in attempts and platform not in handoffs and platform not in legacy:continue
+  if not has and platform not in selected and platform not in attempts and platform not in handoffs and platform not in legacy and platform not in publications:continue
   if not has:
    event=attempts.get(platform)
    if event:states[platform]={'state':'changed' if event['state']=='published' else 'attention','label':'이전 발행 기록 · 현재 원고 없음' if event['state']=='published' else '발행 결과 확인 필요 · 현재 원고 없음','reviewed':False}
    elif platform in handoffs or platform in legacy:states[platform]={'state':'changed','label':'이전 편집기 입력 · 현재 원고 없음','reviewed':False}
    else:states[platform]={'state':'idea','label':'아직 작성 전','reviewed':False}
+   if platform in publications:
+    attach(states[platform],publications[platform],False);states[platform]['label']='이전 발행 기록 · 현재 원고 없음'
    continue
   fp=fingerprint(draft,platform);review=reviews.get(platform);confirmed=bool(review and review['fingerprint']==fp)
   state={'state':'ready' if confirmed else 'draft','label':'원고 확인 완료' if confirmed else '원고 검토 전','reviewed':confirmed}
@@ -136,6 +141,7 @@ def channel_states(draft,reviews,attempts,handoffs,legacy=()):
    if same:state.update(state='handed_off' if event['state']=='ready' else 'attention',label={'ready':'편집기 입력 완료 · 발행 직접 확인','partial':'편집기 서식 확인 필요','failed':'편집기 전달 실패','blocked':'계정 인증 확인 필요'}[event['state']])
    else:state.update(state='changed',label='이전 편집기 입력 · 원고 변경됨')
   elif platform in legacy:state['label']+=' · 이전 편집기 입력 기록'
+  if platform in publications:attach(state,publications[platform],publications[platform]['fingerprint']==fp)
   states[platform]=state
  return states
 
@@ -150,7 +156,7 @@ def page(db,summary,params=None,only_id=None,legacy_handoffs=None):
   ensure(conn);rows=conn.execute('SELECT id,title,data,updated FROM drafts'+(' WHERE id=?' if only_id else '')+' ORDER BY updated DESC', (only_id,) if only_id else ()).fetchall();metas={row['draft_id']:metadata(row) for row in conn.execute('SELECT * FROM library_meta')};reviews={};handoffs={}
   for row in conn.execute('SELECT * FROM story_reviews'):reviews.setdefault(row['draft_id'],{})[row['platform']]=dict(row)
   for row in conn.execute('SELECT * FROM handoff_events ORDER BY created DESC'):handoffs.setdefault(row['draft_id'],{}).setdefault(row['platform'],dict(row))
-  attempts=_attempts(conn)
+  attempts=_attempts(conn);publications=publication_records.latest(conn)
  items=[];counts={'active':0,'starred':0,'archived':0}
  for row in rows:
   meta=metas.get(row['id'],metadata());counts['archived' if meta['archived'] else 'active']+=1
@@ -159,7 +165,7 @@ def page(db,summary,params=None,only_id=None,legacy_handoffs=None):
   try:
    data=json.loads(row['data'])
    if not isinstance(data,dict):raise ValueError()
-   card=summary(row);card['channel_states']=channel_states(data,reviews.get(row['id'],{}),{p:attempts[(row['id'],p)] for p in CHANNELS if (row['id'],p) in attempts},handoffs.get(row['id'],{}),{p for p,ids in (legacy_handoffs or {}).items() if row['id'] in ids})
+   card=summary(row);card['channel_states']=channel_states(data,reviews.get(row['id'],{}),{p:attempts[(row['id'],p)] for p in CHANNELS if (row['id'],p) in attempts},handoffs.get(row['id'],{}),{p for p,ids in (legacy_handoffs or {}).items() if row['id'] in ids},publications.get(row['id'],{}))
   except (ValueError,TypeError,KeyError,AttributeError):
    data={};card={'id':row['id'],'title':str(row['title'] or '읽기 확인이 필요한 이야기')[:200],'updated':row['updated'],'excerpt':'저장한 이야기 형식을 확인해야 해요. 원본은 그대로 보관했어요.','titles':[],'platforms':[],'thumbnail':'','photo_count':0,'place':'','channel_states':{},'damaged':True}
   card['meta']=meta;card['story_title']=meta['label'] or card['title']

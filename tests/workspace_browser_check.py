@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix='mellow-workspace-') as directory:
    assert stored['selected_platforms']==['naver','instagram'] and stored['workspace_step']==3
    assert stored['instagram']=='A little coffee break by the window. ☕'
    page.screenshot(path=str(qa/'workspace-transfer-light.png'),full_page=True)
-   page.locator('#showDrafts').click();expect(page.locator('#modalTitle')).to_have_text('내 글');page.get_by_role('button',name='게시 기록',exact=True).click();expect(page.locator('#modalBody')).to_contain_text('아직 발행')
+   page.locator('#showDrafts').click();expect(page.locator('#modalTitle')).to_have_text('내 글');page.get_by_role('button',name='게시 기록',exact=True).click();expect(page.locator('#modalBody')).to_contain_text('아직 기록한 게시물이 없어요')
    page.get_by_role('button',name='보관한 글',exact=True).click();page.locator('.library-row').first.click();expect(page.locator('#transferCard')).to_be_visible()
    page.locator('#backToEdit').click();page.locator('#previewToggle').click();fill_body(page,'Recovered story from this browser.');expect(page.locator('#saveState')).to_have_text('임시 보관됨')
    page.reload();page.wait_for_function('Object.keys(status).length>0');expect(page.locator('#resultCard')).to_be_visible();expect(page.locator('#body')).to_have_value('Recovered story from this browser.');expect(page.locator('#destinationChoices input[value=instagram]')).to_be_checked()

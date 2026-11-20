@@ -46,6 +46,8 @@ from story_document import read_documents,reconcile as reconcile_document,photo_
 from writing_templates import TEMPLATES,template_for
 from writing_style import BLOG_GUIDANCE,mobile_lines,photo_notes,polish_blog,LIVELY_TONES
 from extension_bridge import ExtensionBridge,HandoffError
+import publication_records
+import delivery_review
 import story_library as library
 import reusable_kits as kits
 
@@ -611,11 +613,19 @@ def instagram_configuration():
             invalid.append("PUBLIC_MEDIA_BASE_URL")
     return {"configured":configured,"missing":missing,"invalid":invalid,"ready":not missing and not invalid,"temporary_connection":PHOTO_TUNNEL.active(),"login_type":instagram_login_type()}
 
+def delivery_snapshot(body,required=False):
+    draft=get_draft(text(body.get("id",""),32,"초안 번호"))
+    try:return delivery_review.snapshot(draft,body,required)
+    except FileExistsError as error:raise Problem(str(error),409,"delivery_conflict")
+    except ValueError as error:raise Problem(str(error))
+
+
 def threads_service():
     return ThreadsPublisher(lambda url,payload,token,timeout:remote(url,payload,token,timeout,form=True),Problem,db,get_draft,MEDIA,PHOTO_TUNNEL,media_base_url)
 
-def publish_instagram(did):
-    draft = platform_view(get_draft(did),"instagram")
+def publish_instagram(did,snapshot=None):
+    if snapshot is not None and snapshot.get("id")!=did:raise Problem("확인한 원고 번호가 일치하지 않아요.")
+    draft = platform_view(delivery_review.snapshot(snapshot,{},False) if snapshot is not None else get_draft(did),"instagram")
     account = os.environ.get("INSTAGRAM_ACCOUNT_ID", "")
     origin = media_base_url().rstrip("/")
     configuration=instagram_configuration()
@@ -790,7 +800,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send((MEDIA / name).read_bytes(), content_type="image/jpeg"); return
             if self.headers.get("Host") not in HOSTS:
                 raise Problem("이 앱은 이 컴퓨터에서만 열 수 있어요.", 403)
-            if path in ("/", "/app.js", "/style.css", "/theme.js", "/workspace.css", "/block-editor.js", "/block-workspace.js", "/blocks.css", "/campaign-ui.js", "/campaign.css", "/writing-ui.js", "/writing.css", "/channel-ui.js", "/channels.css", "/library-ui.js", "/library.css", "/kits-ui.js", "/generation-recovery.js", "/workspace-help.js", "/workspace-help.css"):
+            if path in ("/", "/app.js", "/style.css", "/theme.js", "/workspace.css", "/block-editor.js", "/block-workspace.js", "/blocks.css", "/campaign-ui.js", "/campaign.css", "/writing-ui.js", "/writing.css", "/channel-ui.js", "/channels.css", "/library-ui.js", "/library.css", "/kits-ui.js", "/generation-recovery.js", "/workspace-help.js", "/workspace-help.css", "/delivery-ui.js", "/delivery.css", "/publication-ui.js", "/publications.css", "/modals.css"):
                 filename = "index.html" if path == "/" else path[1:]
                 data = (ROOT / "static" / filename).read_bytes().replace(b"__STUDIO_TOKEN__", TOKEN.encode())
                 self.send(data, content_type=mimetypes.guess_type(filename)[0] + "; charset=utf-8")
@@ -807,6 +817,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/voice-profiles":
                 try:self.send(VOICES.read())
                 except ValueError as error:raise Problem(str(error),409)
+            elif path == "/api/publications":
+                params=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                try:self.send(publication_records.rows(db,params.get("draft_id",[None])[-1],params.get("archived")==["1"]))
+                except ValueError as error:raise Problem(str(error))
             elif path == "/api/library":
                 try:params={key:values[-1] for key,values in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()};self.send(library.page(db,draft_summary,params,legacy_handoffs=library_legacy_handoffs()))
                 except ValueError as error:raise Problem(str(error))
@@ -884,13 +898,21 @@ class Handler(BaseHTTPRequestHandler):
                 result=extension_for(body).redeem(text(body.get("code",""),64,"전달 코드"))
             elif self.path == "/api/extension/report":
                 result=extension_for(body).report(text(body.get("token",""),64,"보고 코드"),body.get("state"),body.get("count"),body.get("diagnostic"))
+            elif self.path == "/api/delivery/preview":
+                draft=delivery_snapshot(body,True);platform=body.get("platform")
+                writer=tistory_writer_url(body.get("blog_url","")) if platform=="tistory" else ""
+                if platform=="naver":
+                    blog_id=os.environ.get("NAVER_BLOG_ID","")
+                    if re.fullmatch(r"[a-zA-Z0-9_-]+",blog_id):writer="https://blog.naver.com/"+blog_id
+                try:result=delivery_review.inspect(draft,platform,MEDIA,body.get("with_images",True),writer)
+                except ValueError as error:raise Problem(str(error))
             elif self.path == "/api/tistory/handoff":
                 writer=tistory_writer_url(body.get("blog_url",""))
-                draft=get_draft(text(body.get("id",""),32,"초안 번호"))
+                draft=delivery_snapshot(body)
                 result=TISTORY_EXTENSION.create(draft,allow_repeat=body.get("repeat_confirm") is True,writer_url=writer)
                 result.update(writer_url=writer,channel="tistory")
             elif self.path == "/api/naver/handoff":
-                draft=get_draft(text(body.get("id",""),32,"초안 번호"))
+                draft=delivery_snapshot(body)
                 blog_id=os.environ.get("NAVER_BLOG_ID","")
                 if not re.fullmatch(r"[a-zA-Z0-9_-]+",blog_id):
                     raise Problem("네이버 블로그 ID를 확인해 주세요.")
@@ -901,6 +923,18 @@ class Handler(BaseHTTPRequestHandler):
                 result = upload(body)
             elif self.path == "/api/drafts":
                 result = save_draft(body)
+            elif self.path in ("/api/publications","/api/publications/archive","/api/publications/preview"):
+                try:
+                    if self.path.endswith("/archive"):result=publication_records.archive(db,body)
+                    elif self.path.endswith("/preview"):
+                        if body.get("platform")=="tistory" and body.get("blog_url"):tistory_writer_url(body["blog_url"])
+                        result={"url":publication_records.canonical_url(body.get("url"),body.get("platform"),os.environ.get("NAVER_BLOG_ID",""),body.get("blog_url","")),"platform":body.get("platform"),"verification":"not_fetched"}
+                    else:
+                        if body.get("platform")=="tistory" and body.get("blog_url"):tistory_writer_url(body["blog_url"])
+                        result=publication_records.save(db,body,os.environ.get("NAVER_BLOG_ID",""))
+                except FileExistsError as error:raise Problem(str(error),409,"publication_conflict")
+                except LookupError as error:raise Problem(str(error),404)
+                except ValueError as error:raise Problem(str(error))
             elif self.path in ("/api/library/meta","/api/library/open","/api/library/review","/api/kits","/api/kits/archive","/api/kits/preview"):
                 try:
                     if self.path=="/api/library/meta":result=library.update_meta(db,body)
@@ -986,10 +1020,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/publish/threads":
                 if body.get("confirm") is not True:raise Problem("발행 확인이 필요해요.")
                 did=text(body.get("id",""),32)
-                get_draft(did)
+                frozen=delivery_snapshot(body)
                 include=body.get("with_images",True)
                 if type(include) is not bool:raise Problem("사진 포함 여부를 확인해 주세요.")
-                result=start_job(lambda progress:threads_service().publish(did,progress,include),with_progress=True,kind="publishing")
+                result=start_job(lambda progress:threads_service().publish(did,progress,include,snapshot=frozen),with_progress=True,kind="publishing")
             elif self.path == "/api/instagram/check":
                 result=check_instagram_connection()
             elif self.path == "/api/media/connect":
@@ -1001,11 +1035,11 @@ class Handler(BaseHTTPRequestHandler):
                 result={"disconnected":True}
             elif self.path in ("/api/publish/instagram","/api/naver/prepare"):
                 did = text(body.get("id",""),32)
-                get_draft(did)
+                frozen=delivery_snapshot(body)
                 if self.path == "/api/publish/instagram":
                     if body.get("confirm") is not True:
                         raise Problem("발행 확인이 필요해요.")
-                    result = start_job(lambda: publish_instagram(did),kind="publishing")
+                    result = start_job(lambda: publish_instagram(did,snapshot=frozen),kind="publishing")
                 else:
                     raise Problem("별도 자동화 브라우저 방식은 사용하지 않아요. 크롬 확장으로 전달해 주세요.",409)
             else:

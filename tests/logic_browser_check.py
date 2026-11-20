@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='mellow-logic-') as folder:
    c.route('**/api/jobs/unicode-only-fixture',lambda route:route.fulfill(json={'state':'done','result':{'media_id':'fixture-no-publication'}}))
    c.evaluate("draft.platform_languages.threads='en'");edit_threads(c,'Mixed 한글');c.evaluate('goWorkspace(3)');c.locator('#publish').click();expect(c.locator('#qualityBox')).to_contain_text('한국어');expect(c.locator('#publish')).to_be_enabled();assert not publish
    c.evaluate('goWorkspace(2)');fill_body(c,'🌸'*300);expect(c.locator('#charCount')).to_have_text('300 / 500자');assert c.locator('#body').input_value()=='🌸'*300
-   c.evaluate('goWorkspace(3)');c.locator('#publish').click();expect(c.locator('#workflow')).to_have_attribute('data-state','published');assert len(publish)==1 and publish[0]['with_images'] is False
+   c.evaluate('goWorkspace(3)');c.locator('#publish').click();c.locator('#deliveryConfirm').click();expect(c.locator('#workflow')).to_have_attribute('data-state','published');assert len(publish)==1 and publish[0]['with_images'] is False
    with urllib.request.urlopen('http://127.0.0.1:8889/api/drafts') as response:rows=json.load(response)
    assert len(rows)==2;assert not errors,errors;browser.close();print('Logic browser passed: actual stale saves, both-draft preservation, conflict dismissal/load, last editing platform, scoped Threads gate, 300 emoji, themes/mobile; SNS calls mocked')
  finally:process.terminate();process.wait(timeout=10)

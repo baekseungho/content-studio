@@ -60,8 +60,10 @@ class ThreadsPublisher:
    if time.monotonic()>=deadline:raise self.problem('Threads 사진 처리 시간이 초과됐어요. 공개 사진 연결을 확인해 주세요.',504)
    progress('Threads에서 사진을 처리하고 있어요. 잠시만 기다려 주세요.')
    time.sleep(min(interval,max(0,deadline-time.monotonic())));interval=min(60,interval*2)
- def publish(self,did,progress=lambda message:None,with_images=True):
-  draft=channel_view(self.get_draft(did),"threads");config=self.configuration()
+ def publish(self,did,progress=lambda message:None,with_images=True,snapshot=None):
+  if snapshot is not None and snapshot.get('id')!=did:raise self.problem('확인한 원고 번호가 일치하지 않아요.')
+  from copy import deepcopy
+  draft=channel_view(deepcopy(snapshot) if snapshot is not None else self.get_draft(did),"threads");config=self.configuration()
   if not config['ready']:raise self.problem('Threads 계정을 먼저 연결해 주세요.',409)
   text=draft.get('threads','').strip()
   if not text or len(text)>500:raise self.problem('Threads 본문을 1~500자로 준비해 주세요.')
